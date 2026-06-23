@@ -535,7 +535,7 @@ class DatabaseManager:
                     os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')),
                     'arbcore', 'config', 'fund_categories.json'
                 )
-                
+
                 if os.path.exists(config_path):
                     with open(config_path, 'r', encoding='utf-8') as f:
                         config = json.load(f)
@@ -564,3 +564,57 @@ class DatabaseManager:
     
     # ==================== 代理方法 ====================
     # 将所有方法代理到对应的子 Manager
+    
+    def save_fund_data(self, *args, **kwargs): return self.funds.save_fund_data(*args, **kwargs)
+    def update_fund_valuation(self, *args, **kwargs): return self.funds.update_fund_valuation(*args, **kwargs)
+    def upsert_fund_factor(self, *args, **kwargs): return self.funds.upsert_fund_factor(*args, **kwargs)
+    def update_fund_pos_ratio(self, *args, **kwargs): return self.funds.update_fund_pos_ratio(*args, **kwargs)
+    def upsert_fund_basket_weight(self, *args, **kwargs): return self.funds.upsert_fund_basket_weight(*args, **kwargs)
+    def get_latest_fund_factor(self, *args, **kwargs): return self.funds.get_latest_fund_factor(*args, **kwargs)
+    def get_fund_basket(self, *args, **kwargs): return self.funds.get_fund_basket(*args, **kwargs)
+    def get_latest_fund_price(self, *args, **kwargs): return self.funds.get_latest_fund_price(*args, **kwargs)
+    def batch_save_fund_prices(self, *args, **kwargs): return self.funds.batch_save_fund_prices(*args, **kwargs)
+    def sync_unified_fund_list(self, *args, **kwargs): return self.funds.sync_unified_fund_list(*args, **kwargs)
+    def get_unified_fund_list(self, *args, **kwargs): return self.funds.get_unified_fund_list(*args, **kwargs)
+    def sync_jsl_fund_list(self, *args, **kwargs): return self.funds.sync_jsl_fund_list(*args, **kwargs)
+    def get_jsl_fund_list(self, *args, **kwargs): return self.funds.get_jsl_fund_list(*args, **kwargs)
+    def batch_save_fund_purchase_status(self, *args, **kwargs): return self.funds.batch_save_fund_purchase_status(*args, **kwargs)
+    def get_fund_purchase_status(self, *args, **kwargs): return self.funds.get_fund_purchase_status(*args, **kwargs)
+    def save_unified_history(self, *args, **kwargs): return self.funds.save_unified_history(*args, **kwargs)
+
+    def upsert_exchange_rate(self, *args, **kwargs): return self.market.upsert_exchange_rate(*args, **kwargs)
+    def upsert_hkd_exchange_rate(self, *args, **kwargs): return self.market.upsert_hkd_exchange_rate(*args, **kwargs)
+    def upsert_futures_daily(self, *args, **kwargs): return self.market.upsert_futures_daily(*args, **kwargs)
+    def upsert_usa_etf_price(self, *args, **kwargs): return self.market.upsert_usa_etf_price(*args, **kwargs)
+
+    def get_latest_usa_etf_date(self, *args, **kwargs): return self.market.get_latest_usa_etf_date(*args, **kwargs)
+    def get_latest_futures_price(self, *args, **kwargs): return self.market.get_latest_futures_price(*args, **kwargs)
+    def batch_save_futures_data(self, *args, **kwargs): return self.market.batch_save_futures_data(*args, **kwargs)
+
+    def save_raw_api_data(self, *args, **kwargs): return self.system.save_raw_api_data(*args, **kwargs)
+    def get_raw_api_data(self, *args, **kwargs): return self.system.get_raw_api_data(*args, **kwargs)
+    def mark_access_synced(self, *args, **kwargs): return self.system.mark_access_synced(*args, **kwargs)
+    def is_access_synced_today(self, *args, **kwargs): return self.system.is_access_synced_today(*args, **kwargs)
+    def remove_access_sync_status(self, *args, **kwargs): return self.system.remove_access_sync_status(*args, **kwargs)
+    def save_health_status(self, *args, **kwargs): return self.system.save_health_status(*args, **kwargs)
+    def get_health_status(self, *args, **kwargs): return self.system.get_health_status(*args, **kwargs)
+    def cleanup_old_data(self, *args, **kwargs): return self.system.cleanup_old_data(*args, **kwargs)
+    def drop_deprecated_tables(self, *args, **kwargs): return self.system.drop_deprecated_tables(*args, **kwargs)
+    def vacuum_database(self, *args, **kwargs): return self.system.vacuum_database(*args, **kwargs)
+    def get_data_source_config(self, *args, **kwargs): return self.system.get_data_source_config(*args, **kwargs)
+    def update_data_source_config(self, *args, **kwargs): return self.system.update_data_source_config(*args, **kwargs)
+
+    # Compatibility methods
+    def mark_api_synced(self, *args, **kwargs): return self.mark_access_synced(*args, **kwargs)
+    def is_api_synced_today(self, *args, **kwargs): return self.is_access_synced_today(*args, **kwargs)
+    
+    def sync_etf_rotation_list(self, df):
+        with self.lock:
+            try:
+                self.adapter.execute('DROP TABLE IF EXISTS etf_rotation_list')
+                self.adapter.execute('''CREATE TABLE IF NOT EXISTS etf_rotation_list (group_id INTEGER, lof_code TEXT, lof_name TEXT, etf_code TEXT, etf_name TEXT, track_index TEXT, updated_at TIMESTAMP DEFAULT now(), PRIMARY KEY (lof_code, etf_code))''')
+                for _, row in df.iterrows():
+                    self.adapter.execute('INSERT INTO etf_rotation_list (group_id, lof_code, lof_name, etf_code, etf_name, track_index) VALUES (%s, %s, %s, %s, %s, %s)', (int(row['组别']), str(row['LOF基金代码']).split('.')[0].zfill(6), str(row['LOF基金名称']), str(row['ETF基金代码']).split('.')[0].zfill(6), str(row['ETF基金名称']), str(row['跟踪指数'])))
+                self.adapter.commit()
+                logger.info(f"Successfully synced {len(df)} rotation config items.")
+            except Exception as e: logger.error(f"Failed to sync rotation config: {e}")

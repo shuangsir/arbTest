@@ -68,17 +68,6 @@ class MarketManager(BaseManager):
             ''', (date, symbol, price, netvalue))
             self.adapter.commit()
 
-    def upsert_index_price(self, date: str, symbol: str, price: float):
-        """更新指数价格"""
-        with self.lock:
-            self.adapter.execute('''
-                INSERT INTO index_daily (date, symbol, price, updated_at)
-                VALUES (%s, %s, %s, now())
-                ON CONFLICT(date, symbol) DO UPDATE SET
-                price = EXCLUDED.price,
-                updated_at = EXCLUDED.updated_at
-            ''', (date, symbol, price))
-            self.adapter.commit()
 
     def get_latest_usa_etf_date(self, symbol: str) -> str:
         """获取美股ETF最新日期"""
