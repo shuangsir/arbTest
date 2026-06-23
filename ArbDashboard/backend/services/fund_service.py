@@ -70,8 +70,8 @@ def _ensure_daily_snapshot(conn):
 _TAB_CATEGORY_MAP = {
     '黄金原油': ['黄金原油'],
     'QDII欧美': ['QDII欧美', '混合跨境'],
-    'QDII亚洲': ['QDII亚洲'],
-    '国内LOF': ['国内指数', '指数LOF'],
+    'QDII亚洲': ['QDII亚洲', 'QDII 亚洲'],
+    '国内LOF': ['国内指数', '指数LOF', '国内LOF'],
     '白银': ['白银'],
     '现金管理': ['债券/货币'],
 }
@@ -1570,7 +1570,9 @@ class FundService:
         try:
             rates_df = pd.read_sql_query("SELECT * FROM exchange_rate ORDER BY date DESC LIMIT 2", conn)
             if not rates_df.empty:
-                res["rates"] = rates_df.iloc[0].to_dict()
+                rates_dict = rates_df.iloc[0].to_dict()
+                # 过滤 NaN 值，防止 JSON 序列化失败
+                res["rates"] = {k: v for k, v in rates_dict.items() if pd.notna(v)}
                 # 计算涨跌幅（百分比）
                 if len(rates_df) >= 2:
                     current = rates_df.iloc[0]

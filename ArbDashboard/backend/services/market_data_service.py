@@ -261,17 +261,23 @@ class MarketDataService:
     def get_active_source_names(self) -> List[str]:
         """获取当前活跃的数据源名称（仅返回真正已连接的）"""
         sources = []
+        name_map = {
+            "tdx": "通达信",
+            "guojin": "国金QMT",
+            "galaxy": "银河QMT",
+            "sina": "新浪财经",
+            "tencent": "腾讯财经"
+        }
         for name, fetcher in self.realtime_manager.active_fetchers.items():
-            # 跳过 disabled（连接失败 3 次后熔断）的 fetcher
             if getattr(fetcher, 'disabled', False):
                 continue
-            sources.append(name)
+            sources.append(name_map.get(name, name))
         # 实时检测 IB 的真实连接状态
         if self.ib_reader is not None and getattr(self.ib_reader, 'connected', False) and not any("IB" in s for s in sources):
             sources.append("IB (Ready)")
         else:
             sources.append("IB (未运行)")
-        # 实时检测富途 OpenD 端口的真实连接状态（避免因 IB 优先级高未触发富途连接而导致状态不显示的问题）
+        # 实时检测富途 OpenD 端口的真实连接状态
         if self.futu_reader is not None and not any("富途" in s for s in sources):
             import socket
             try:

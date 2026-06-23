@@ -45,8 +45,8 @@ export interface FundItem {
 export const TAB_CATEGORIES: Record<string, string[]> = {
   '黄金原油': ['黄金原油'],
   'QDII欧美': ['QDII欧美', '混合跨境'],
-  'QDII亚洲': ['QDII亚洲'],
-  '国内LOF': ['国内指数', '指数LOF'],
+  'QDII亚洲': ['QDII亚洲', 'QDII 亚洲'],
+  '国内LOF': ['国内指数', '指数LOF', '国内LOF'],
   '白银': ['白银'],
   '现金管理': ['债券/货币']
 }

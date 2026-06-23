@@ -34,9 +34,10 @@ export const useMarketStore = defineStore('market', () => {
   const loading = ref(false)
 
   // ---- getters ----
-  const hasTdx = computed(() =>
-    (overview.value?.active_sources || []).includes('tdx')
-  )
+  const hasTdx = computed(() => {
+    const sources = overview.value?.active_sources || []
+    return sources.some((s) => s.includes('通达信'))
+  })
   const hasIb = computed(() => {
     const sources = overview.value?.active_sources || []
     return sources.some((s) => s.includes('IB') && !s.includes('未运行'))
@@ -45,12 +46,14 @@ export const useMarketStore = defineStore('market', () => {
     const sources = overview.value?.active_sources || []
     return sources.some((s) => s.includes('IB (未运行)'))
   })
-  const hasGalaxy = computed(() =>
-    (overview.value?.active_sources || []).includes('galaxy')
-  )
-  const hasGuojin = computed(() =>
-    (overview.value?.active_sources || []).includes('guojin')
-  )
+  const hasGalaxy = computed(() => {
+    const sources = overview.value?.active_sources || []
+    return sources.some((s) => s.includes('银河QMT'))
+  })
+  const hasGuojin = computed(() => {
+    const sources = overview.value?.active_sources || []
+    return sources.some((s) => s.includes('国金QMT'))
+  })
   const hasFutu = computed(() => {
     const sources = overview.value?.active_sources || []
     return sources.some((s) => s.includes('富途'))
