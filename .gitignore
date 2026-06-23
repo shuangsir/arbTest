@@ -85,6 +85,7 @@ deploy_vps.py
 __pycache__/
 node_modules/
 venv/
+.venv/
 dist/
 .vite/
 *.pyc
