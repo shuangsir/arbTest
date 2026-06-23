@@ -154,10 +154,14 @@ class DashboardSnapshotService:
     def get_snapshot(self, watchlist: Optional[List[str]] = None, category: Optional[str] = None) -> Dict[str, Any]:
         key = self._snapshot_key(watchlist, category)
         with self._lock:
-            snapshot = self._snapshots.get(key) or self._snapshots.get("all")
+            snapshot = self._snapshots.get(key)
+            # 如果对应分类的快照不存在或数据为空，回退到 "all" 快照
+            if not snapshot or not snapshot.get("data"):
+                snapshot = self._snapshots.get("all")
             if snapshot:
                 result = dict(snapshot)
-                if watchlist:
+                # 只有当 watchlist 非空时才进行过滤
+                if watchlist and len(watchlist) > 0:
                     allowed = set(watchlist)
                     result["data"] = [item for item in result.get("data", []) if item.get("fund_code") in allowed]
                     result["key"] = "watchlist_request"

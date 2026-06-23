@@ -12,10 +12,10 @@ class LedgerService:
 
     def get_all_trades(self, status: str = 'ACTIVE') -> List[Dict[str, Any]]:
         """获取所有实盘记录"""
-        conn = self.db._get_conn()
         try:
-            query = "SELECT * FROM user_trades WHERE status = ? ORDER BY trade_date DESC"
-            df = pd.read_sql_query(query, conn, params=(status,))
+            engine = self.db.get_sqlalchemy_engine()
+            query = "SELECT * FROM user_trades WHERE status = %s ORDER BY trade_date DESC"
+            df = pd.read_sql_query(query, engine, params=(status,))
             
             # 增强逻辑：计算剩余赎回天数与染色状态
             today = datetime.now().date()
@@ -27,8 +27,9 @@ class LedgerService:
                 else:
                     t['days_left'] = None
             return trades
-        finally:
-            conn.close()
+        except Exception as e:
+            logger.error(f"get_all_trades failed: {e}")
+            return []
 
     def _get_next_workday(self, current_date: datetime, days: int) -> datetime:
         """计算 N 个交易日后的日期 (跳过周六日)"""
@@ -99,14 +100,15 @@ class LedgerService:
 
     # --- 费率管理 ---
     def get_fund_fees(self, fund_code: str) -> Dict[str, Any]:
-        conn = self.db._get_conn()
         try:
-            df = pd.read_sql_query("SELECT * FROM fund_fees WHERE fund_code = ?", conn, params=(fund_code,))
+            engine = self.db.get_sqlalchemy_engine()
+            df = pd.read_sql_query("SELECT * FROM fund_fees WHERE fund_code = %s", engine, params=(fund_code,))
             if not df.empty:
                 return df.iloc[0].to_dict()
             return {"redemption_fee_rate": 0.5, "broker_name": ""}
-        finally:
-            conn.close()
+        except Exception as e:
+            logger.error(f"get_fund_fees failed: {e}")
+            return {"redemption_fee_rate": 0.5, "broker_name": ""}
 
     def upsert_fund_fee(self, data: Dict[str, Any]):
         conn = self.db._get_conn()
@@ -122,12 +124,13 @@ class LedgerService:
             conn.close()
 
     def get_broker_redemption_fees(self):
-        conn = self.db._get_conn()
         try:
-            df = pd.read_sql_query("SELECT * FROM broker_redemption_fees", conn)
+            engine = self.db.get_sqlalchemy_engine()
+            df = pd.read_sql_query("SELECT * FROM broker_redemption_fees", engine)
             return df.to_dict('records')
-        finally:
-            conn.close()
+        except Exception as e:
+            logger.error(f"get_broker_redemption_fees failed: {e}")
+            return []
 
     def upsert_broker_redemption_fee(self, data: Dict[str, Any]):
         conn = self.db._get_conn()
@@ -217,17 +220,17 @@ class LedgerService:
 
     def get_all_pairs(self, status: str = None) -> List[Dict[str, Any]]:
         """获取套利对列表"""
-        conn = self.db._get_conn()
         try:
+            engine = self.db.get_sqlalchemy_engine()
             if status:
                 df = pd.read_sql_query(
-                    "SELECT * FROM arbitrage_pairs WHERE status = ? ORDER BY COALESCE(sell_date, buy_date) DESC",
-                    conn, params=(status,)
+                    "SELECT * FROM arbitrage_pairs WHERE status = %s ORDER BY COALESCE(sell_date, buy_date) DESC",
+                    engine, params=(status,)
                 )
             else:
                 df = pd.read_sql_query(
                     "SELECT * FROM arbitrage_pairs ORDER BY COALESCE(sell_date, buy_date) DESC",
-                    conn
+                    engine
                 )
             pairs = df.to_dict(orient='records')
             usd_rate = self._get_usd_rate()
@@ -332,7 +335,8 @@ class LedgerService:
                 us_comm = data.get('us_commission') or 0
 
                 if not all([buy_amt, sell_amt]):
-                    df = pd.read_sql_query("SELECT * FROM arbitrage_pairs WHERE id = ?", conn, params=(pair_id,))
+                    engine = self.db.get_sqlalchemy_engine()
+                    df = pd.read_sql_query("SELECT * FROM arbitrage_pairs WHERE id = %s", engine, params=(pair_id,))
                     if not df.empty:
                         row = df.iloc[0]
                         buy_amt = buy_amt or (row.get('buy_amount') or 0)
@@ -400,10 +404,10 @@ class LedgerService:
                 })
                 return pair_id
             elif action == 'SELL':
-                # 美股做空 → 找到该基金最新没有美股侧的ACTIVE对，附加上去
+                engine = self.db.get_sqlalchemy_engine()
                 df = pd.read_sql_query(
-                    "SELECT id FROM arbitrage_pairs WHERE status='ACTIVE' AND (short_amount IS NULL OR short_amount=0) AND fund_code=? ORDER BY id DESC LIMIT 1",
-                    conn, params=(fund_code.split('.')[0],)
+                    "SELECT id FROM arbitrage_pairs WHERE status='ACTIVE' AND (short_amount IS NULL OR short_amount=0) AND fund_code=%s ORDER BY id DESC LIMIT 1",
+                    engine, params=(fund_code.split('.')[0],)
                 )
                 if not df.empty:
                     pair_id = int(df.iloc[0]['id'])

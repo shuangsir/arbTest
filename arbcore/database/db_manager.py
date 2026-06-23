@@ -11,6 +11,9 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
+
 from .adapters import PostgresAdapter
 from .managers.fund_manager import FundManager
 from .managers.market_manager import MarketManager
@@ -78,6 +81,9 @@ class DatabaseManager:
         self.market = MarketManager(self.adapter, self.lock)
         self.system = SystemManager(self.adapter, self.lock)
         
+        # 创建 SQLAlchemy 引擎（供 pandas 使用）
+        self._create_sqlalchemy_engine()
+        
         # 初始化数据库表结构
         self.init_db()
         
@@ -87,6 +93,22 @@ class DatabaseManager:
     def _get_conn(self):
         """获取数据库连接（兼容旧代码）"""
         return self.adapter.get_connection()
+    
+    def _create_sqlalchemy_engine(self):
+        """创建 SQLAlchemy 引擎（供 pandas 使用）"""
+        try:
+            from urllib.parse import quote_plus
+            password = quote_plus(self.pg_config.get("password", ""))
+            conn_str = f"postgresql://{self.pg_config.get('user', 'postgres')}:{password}@{self.pg_config.get('host', 'localhost')}:{self.pg_config.get('port', 5432)}/{self.pg_config.get('db_name', 'arb_master')}"
+            self._engine = create_engine(conn_str, poolclass=NullPool, echo=False)
+            logger.info("SQLAlchemy 引擎创建成功")
+        except Exception as e:
+            logger.warning(f"SQLAlchemy 引擎创建失败: {e}")
+            self._engine = None
+    
+    def get_sqlalchemy_engine(self):
+        """获取 SQLAlchemy 引擎（供 pandas 使用）"""
+        return self._engine
     
     def init_db(self):
         """初始化数据库表结构"""

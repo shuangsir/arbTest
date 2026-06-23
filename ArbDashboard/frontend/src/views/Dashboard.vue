@@ -511,10 +511,10 @@ const historyColumns = computed<DataTableColumns<any>>(() => {
             }
         }] : []),
         { title: '收盘价', key: 'price', width: 85, align: 'center', render(row: any) { return renderValWithChg(row.price, row.price_chg, 3) } },
-        // 现金管理：折价几根毛/溢价在静态估值左侧；否则放静态估值右侧
+        // 现金管理：折价/溢价在静态估值左侧；否则放静态估值右侧
         ...isCash
             ? [
-                { title: '折价几根毛', key: 'yield_per_wan', width: 90, align: 'center', render(row: any) { const v = ((row.nav || 0) - (row.price || 0)) * 100; if (v === 0) return '-'; return h('span', { style: { color: priceColor(v), fontWeight: '500' } }, v.toFixed(2)) } },
+                { title: '折价', key: 'yield_per_wan', width: 90, align: 'center', render(row: any) { const v = ((row.nav || 0) - (row.price || 0)) * 100; if (v === 0) return '-'; return h('span', { style: { color: priceColor(v), fontWeight: '500' } }, v.toFixed(2)) } },
                 { title: '溢价', key: 'rt_premium', width: 90, align: 'center', render(row: any) { const nav = row.nav || 0; if (nav === 0) return '-'; const v = ((row.price || 0) / nav - 1); return h('span', { style: { color: priceColor(v), fontWeight: '500' } }, (v * 100).toFixed(3) + '%') } },
                 // 511360 专属: 国债指数 + 涨幅
                 ...(is511360.value ? [
@@ -617,11 +617,11 @@ const columns = computed<DataTableColumns<any>>(() => {
       if (col.key === 'rt_val_display') col.title = '估值'
     })
     
-    // 估值列之后插入折价几根毛和溢价（基于估值计算，不用净值）
+    // 估值列之后插入折价和溢价（基于估值计算，不用净值）
     const rtValIndex = cols.findIndex(c => c.key === 'rt_val_display')
     if (rtValIndex >= 0) {
       cols.splice(rtValIndex + 1, 0,
-        { title: '折价几根毛', key: 'yield_per_wan', width: 80, align: 'center',
+        { title: '折价', key: 'yield_per_wan', width: 80, align: 'center',
           render(row: any) { const v = ((row.rt_val || 0) - (row.price || 0)) * 100; if (v === 0) return '-'; return h('span', { style: { color: priceColor(v), fontWeight: '500' } }, v.toFixed(2)) }
         },
         { title: '溢价', key: 'rt_premium_calc', width: 80, align: 'center',

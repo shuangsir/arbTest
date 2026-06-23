@@ -112,14 +112,14 @@ class BondETFValuation:
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cdb_yield_bp (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     date TEXT NOT NULL,
                     cdb_7y_bp REAL,
                     cdb_10y_bp REAL,
                     treasury_7y_bp REAL,
                     treasury_10y_bp REAL,
                     note TEXT,
-                    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(date)
                 )
             """)

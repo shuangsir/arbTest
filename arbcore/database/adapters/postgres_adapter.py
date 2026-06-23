@@ -35,6 +35,7 @@ class PostgresAdapter(IDatabaseAdapter):
         self.user = user
         self.password = password
         self._local = threading.local()
+        self._connected = False
     
     def _create_connection(self):
         """创建新连接"""
@@ -101,6 +102,7 @@ class PostgresAdapter(IDatabaseAdapter):
     def close_all(self):
         """关闭所有线程连接（仅用于测试清理）"""
         self._local.conn = None
+        self._connected = False
     
     def get_connection(self):
         """获取数据库连接对象（线程安全）"""
@@ -116,7 +118,9 @@ class PostgresAdapter(IDatabaseAdapter):
                 pass
         conn = self._create_connection()
         self._local.conn = conn
-        logger.info(f"PostgreSQL 连接成功: {self.host}:{self.port}/{self.db_name}")
+        if not self._connected:
+            self._connected = True
+            logger.info(f"PostgreSQL 连接成功: {self.host}:{self.port}/{self.db_name}")
         return conn
     
     def execute(self, sql: str, params: Tuple = None) -> Any:

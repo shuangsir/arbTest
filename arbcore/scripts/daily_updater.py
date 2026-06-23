@@ -263,6 +263,7 @@ class DailyUpdater(BaseApp):
         self.logger.info("=== 步骤2.5：同步最新因子到 lof_config.yaml ===")
         try:
             conn = self.db._get_conn()
+            engine = self.db.get_sqlalchemy_engine()
             yaml_updated = False
             
             for fund in self.config.get('funds', []):
@@ -270,7 +271,7 @@ class DailyUpdater(BaseApp):
                 if not code: continue
                 
                 # 1. 查询最新仓位
-                pos_df = pd.read_sql("SELECT position FROM fund_daily_factors WHERE fund_code=%s ORDER BY date DESC LIMIT 1", conn, params=(code,))
+                pos_df = pd.read_sql("SELECT position FROM fund_daily_factors WHERE fund_code=%s ORDER BY date DESC LIMIT 1", engine, params=(code,))
                 if not pos_df.empty and pd.notna(pos_df.iloc[0]['position']):
                     new_pos = float(pos_df.iloc[0]['position'])
                     if new_pos <= 1.5: new_pos = new_pos * 100  # 转换为百分比(防呆设计)
@@ -285,7 +286,7 @@ class DailyUpdater(BaseApp):
                         self.logger.info(f"🔄 [{code}] YAML仓位已同步: {old_pos}% -> {new_pos:.2f}%")
                 
                 # 2. 查询最新权重
-                weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", conn, params=(code, code))
+                weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
                 if not weight_df.empty:
                     db_weights = {row['underlying_symbol'].replace('^', ''): float(row['weight']) for _, row in weight_df.iterrows() if pd.notna(row['weight'])}
                     
@@ -827,15 +828,19 @@ class DailyUpdater(BaseApp):
             config = yaml.safe_load(f)
         calc = StaticValuationCalculator(self.db)
         success = 0
+        failed = []
         for fund in config.get('funds', []):
             if not fund.get('valuation_portfolio') and not fund.get('hedging_portfolio'):
-                continue  # 跳过无估值配置的基金（如白银期货）
+                continue
             try:
                 if calc.process_fund(fund):
                     success += 1
             except Exception as e:
-                self.logger.error(f"  ❌ [{fund.get('code')}] 静态估值计算失败: {e}")
-        self.logger.info(f"✅ [静态估值] 计算完成，{success}/{len(config.get('funds', []))} 只基金已更新")
+                failed.append(f"{fund.get('code')}: {str(e)[:50]}")
+        if failed:
+            for f in failed:
+                self.logger.error(f"  ❌ [{f}]")
+        self.logger.info(f"✅ [静态估值] 计算完成，{success}只成功，{len(failed)}只失败")
 
 # ================================================================
     # 步骤十一：跟踪指数公式静态估值 (覆盖 QDII亚洲 / 国内LOF / 指数LOF)

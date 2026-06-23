@@ -64,17 +64,16 @@ class FundManager(BaseManager):
         with self.lock:
             conn = self._get_conn()
             try:
-                cursor = conn.execute('''
-                    UPDATE unified_fund_list SET pos_ratio = ?
-                    WHERE fund_code = ?
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE unified_fund_list SET pos_ratio = %s
+                    WHERE fund_code = %s
                 ''', (pos_ratio, fund_code))
                 if cursor.rowcount > 0:
                     logger.info(f"✅ pos_ratio 同步: {fund_code} → {pos_ratio*100:.2f}%")
-                conn.commit()
+                cursor.close()
             except Exception as e:
                 logger.error(f"❌ 更新 {fund_code} pos_ratio 失败: {e}")
-            finally:
-                conn.close()
             
     def upsert_fund_basket_weight(self, date: str, fund_code: str, underlying_symbol: str, weight: float):
         """更新基金篮子权重"""

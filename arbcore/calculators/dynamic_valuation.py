@@ -34,6 +34,7 @@ class DynamicValuationCalculator:
 
 
         conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             # 联表查询：净值 + 因子 + 汇率
             query = """
@@ -47,7 +48,7 @@ class DynamicValuationCalculator:
                 WHERE a.fund_code = %s AND COALESCE(a.nav, b.nav) IS NOT NULL AND COALESCE(a.nav, b.nav) > 0
                 ORDER BY a.date DESC LIMIT 1
             """
-            df = pd.read_sql(query, conn, params=(fund_code,))
+            df = pd.read_sql(query, engine, params=(fund_code,))
             if df.empty: return None
             
             base_row = df.iloc[0].to_dict()
@@ -57,7 +58,7 @@ class DynamicValuationCalculator:
             etf_df = pd.read_sql(
                 "SELECT symbol, COALESCE(NULLIF(netvalue, 0), price) as price, date "
                 "FROM usa_etf_daily_prices WHERE date = %s", 
-                conn, params=(base_date,)
+                engine, params=(base_date,)
             )
             if not etf_df.empty:
                 for _, r in etf_df.iterrows():
@@ -82,7 +83,7 @@ class DynamicValuationCalculator:
                         f"FROM usa_etf_daily_prices "
                         f"WHERE symbol IN ({placeholders}) AND price > 0 AND date <= %s "
                         f"GROUP BY symbol",
-                        conn, params=(*known_etfs, base_date)
+                        engine, params=(*known_etfs, base_date)
                     )
                     for _, r in fallback_df.iterrows():
                         sym = r['symbol']

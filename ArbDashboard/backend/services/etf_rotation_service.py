@@ -27,12 +27,11 @@ class ETFRotationService:
 
     def get_rotation_list(self) -> List[Dict[str, Any]]:
         """返回 etf_rotation_list 表中的分组配置"""
-        conn = self.db._get_conn()
         try:
-            df = pd.read_sql("SELECT * FROM etf_rotation_list ORDER BY group_id", conn)
+            engine = self.db.get_sqlalchemy_engine()
+            df = pd.read_sql("SELECT * FROM etf_rotation_list ORDER BY group_id", engine)
             if df.empty:
                 return []
-            # 按 group_id 聚合为分组结构
             groups = {}
             for _, row in df.iterrows():
                 gid = int(row['group_id'])
@@ -42,7 +41,6 @@ class ETFRotationService:
                 lof_code = str(row.get('lof_code', '') or '').split('.')[0].strip()
                 etf_code = str(row.get('etf_code', '') or '').split('.')[0].strip()
 
-                # LOF 条目
                 if lof_code and lof_code.lower() not in ('nan', ''):
                     fund_key = (gid, lof_code, 'LOF')
                     if not any(f['code'] == lof_code and f['type'] == 'LOF' for f in groups[gid]['funds']):
@@ -53,7 +51,6 @@ class ETFRotationService:
                             'type': 'LOF'
                         })
 
-                # ETF 条目
                 if etf_code and etf_code.lower() not in ('nan', ''):
                     fund_key = (gid, etf_code, 'ETF')
                     if not any(f['code'] == etf_code and f['type'] == 'ETF' for f in groups[gid]['funds']):
@@ -68,8 +65,9 @@ class ETFRotationService:
             for gid in sorted(groups.keys()):
                 result.append(groups[gid])
             return result
-        finally:
-            conn.close()
+        except Exception as e:
+            logger.error(f"get_rotation_list failed: {e}")
+            return []
 
     # ─── 汇率: 实时在岸价 ──────────────────────────────
 
@@ -145,13 +143,12 @@ class ETFRotationService:
         result = {'nav': 0.0, 'position': 0.95, 'hedge': None}
 
         if fund_type == 'LOF':
-            # LOF: 优先从 fund_daily_factors 取最新数据
             try:
-                conn = self.db._get_conn()
+                engine = self.db.get_sqlalchemy_engine()
                 df = pd.read_sql(
                     "SELECT nav, position, hedge FROM fund_daily_factors "
-                    "WHERE fund_code=? ORDER BY date DESC LIMIT 1",
-                    conn, params=(code,)
+                    "WHERE fund_code=%s ORDER BY date DESC LIMIT 1",
+                    engine, params=(code,)
                 )
                 if not df.empty:
                     row = df.iloc[0]
@@ -159,41 +156,36 @@ class ETFRotationService:
                     result['position'] = float(row['position']) if pd.notna(row['position']) else 0.95
                     result['hedge'] = float(row['hedge']) if pd.notna(row['hedge']) else None
 
-                # 兜底: 从 unified_fund_history 取 nav
                 if result['nav'] <= 0:
                     df2 = pd.read_sql(
                         "SELECT COALESCE(nav, 0) as nav FROM unified_fund_history "
-                        "WHERE fund_code=? AND nav > 0 ORDER BY date DESC LIMIT 1",
-                        conn, params=(code,)
+                        "WHERE fund_code=%s AND nav > 0 ORDER BY date DESC LIMIT 1",
+                        engine, params=(code,)
                     )
                     if not df2.empty:
                         result['nav'] = float(df2.iloc[0]['nav'])
-                conn.close()
             except Exception as e:
                 logger.warning(f"[BASE] LOF {code} 获取基准数据失败: {e}")
 
         else:
-            # ETF: 从 unified_fund_history 获取 nav
             try:
-                conn = self.db._get_conn()
+                engine = self.db.get_sqlalchemy_engine()
                 df = pd.read_sql(
                     "SELECT COALESCE(nav, 0) as nav FROM unified_fund_history "
-                    "WHERE fund_code=? AND nav > 0 ORDER BY date DESC LIMIT 1",
-                    conn, params=(code,)
+                    "WHERE fund_code=%s AND nav > 0 ORDER BY date DESC LIMIT 1",
+                    engine, params=(code,)
                 )
                 if not df.empty:
                     result['nav'] = float(df.iloc[0]['nav'])
 
-                # 也尝试从 fund_daily_factors 拿（虽然数据可能旧一些）
                 if result['nav'] <= 0:
                     df2 = pd.read_sql(
                         "SELECT nav, position, hedge FROM fund_daily_factors "
-                        "WHERE fund_code=? ORDER BY date DESC LIMIT 1",
-                        conn, params=(code,)
+                        "WHERE fund_code=%s ORDER BY date DESC LIMIT 1",
+                        engine, params=(code,)
                     )
                     if not df2.empty:
                         result['nav'] = float(df2.iloc[0]['nav']) if pd.notna(df2.iloc[0]['nav']) else 0.0
-                conn.close()
             except Exception as e:
                 logger.warning(f"[BASE] ETF {code} 获取基准数据失败: {e}")
 
@@ -210,21 +202,18 @@ class ETFRotationService:
         if nav <= 0 or position <= 0:
             return None
         try:
-            conn = self.db._get_conn()
-            # 获取最近的 usa_etf_daily_prices
+            engine = self.db.get_sqlalchemy_engine()
             df_us = pd.read_sql(
                 "SELECT price, netvalue, date FROM usa_etf_daily_prices "
-                "WHERE symbol=? AND (price>0 OR netvalue>0) ORDER BY date DESC LIMIT 1",
-                conn, params=(us_symbol,)
+                "WHERE symbol=%s AND (price>0 OR netvalue>0) ORDER BY date DESC LIMIT 1",
+                engine, params=(us_symbol,)
             )
             if df_us.empty:
-                # 也试试带 ^ 前缀的符号
                 df_us = pd.read_sql(
                     "SELECT price, netvalue, date FROM usa_etf_daily_prices "
-                    "WHERE symbol=? AND (price>0 OR netvalue>0) ORDER BY date DESC LIMIT 1",
-                    conn, params=(f"^{us_symbol}",)
+                    "WHERE symbol=%s AND (price>0 OR netvalue>0) ORDER BY date DESC LIMIT 1",
+                    engine, params=(f"^{us_symbol}",)
                 )
-            conn.close()
 
             if not df_us.empty:
                 us_prev = float(df_us.iloc[0].get('netvalue') or df_us.iloc[0].get('price') or 0)
@@ -360,9 +349,9 @@ class ETFRotationService:
                 "SELECT date, price, COALESCE(nav, 0) as nav, "
                 "COALESCE(premium, 0) as premium "
                 "FROM unified_fund_history "
-                "WHERE fund_code=? AND date >= date('now', '-90 days') "
+                "WHERE fund_code=%s AND date >= date('now', '-90 days') "
                 "ORDER BY date DESC",
-                conn, params=(lof_code,)
+                engine, params=(lof_code,)
             )
             if hist.empty:
                 return []
@@ -371,13 +360,13 @@ class ETFRotationService:
             etf_codes = [f['code'] for f in target_group['funds'] if f['type'] == 'ETF']
             etf_history = {}
             if etf_codes:
-                codes_str = ','.join(f"'{c}'" for c in etf_codes)
+                placeholders = ','.join('%s' for _ in etf_codes)
                 etf_df = pd.read_sql(
                     f"SELECT fund_code, date, price, COALESCE(nav, 0) as nav "
                     f"FROM unified_fund_history "
-                    f"WHERE fund_code IN ({codes_str}) AND date >= date('now', '-90 days') "
+                    f"WHERE fund_code IN ({placeholders}) AND date >= date('now', '-90 days') "
                     f"ORDER BY date DESC",
-                    conn
+                    engine, params=etf_codes
                 )
                 if not etf_df.empty:
                     for _, row in etf_df.iterrows():

@@ -3,6 +3,7 @@ import sys
 import subprocess
 import pandas as pd
 import logging
+import warnings
 from logging.handlers import RotatingFileHandler
 import uvicorn
 from fastapi import FastAPI, Request
@@ -11,6 +12,14 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from datetime import datetime
+
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', message='.*InsecureRequestWarning.*')
+warnings.filterwarnings('ignore', message='.*Unverified HTTPS request.*')
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Setup logging
 backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -64,37 +73,23 @@ logger = logging.getLogger("ArbNext")
 # 强制设为 False，防止 opencode cli 等占用 5000 端口导致误判为 Slave 只读模式
 lof_is_running = False
 
-# [V4.4] 强力补丁：全局唯一 TQ 抢占与锁定
-# [V10.0] 启动时不自动连接通达信，跳过 TQ 全局初始化（用户点击"通达信"按钮时才需要）
-# 用户手动重连通达信时，TdxRealtimeFetcher.connect() 会自行完成 TQ 初始化
-logger.info("[V10.0] 跳过 TQ 全局初始化（通达信待用户手动连接）")
+_start_time = datetime.now()
 
 # Add project root and core/arbcore to path
-# [FIX] 使用 D:\Study\arbTest\arbcore 作为核心模块目录
 backend_dir = os.path.dirname(os.path.abspath(__file__))
-# arbcore 在 ArbDashboard 的上级目录 (D:\Study\arbTest\arbcore)
-# 需要添加 D:\Study\arbTest 到 sys.path，这样 Python 才能找到 arbcore 包
 arbcore_parent = os.path.normpath(os.path.join(backend_dir, "..", ".."))
 arbcore_dir = os.path.join(arbcore_parent, "arbcore")
 if os.path.exists(arbcore_dir):
     sys.path.insert(0, arbcore_parent)
-    logger.info(f"使用 arbcore 目录: {arbcore_dir} (父目录: {arbcore_parent})")
 else:
-    # 降级：尝试使用 backend/core
     fallback_dir = os.path.join(backend_dir, "core")
     if os.path.exists(fallback_dir):
         sys.path.insert(0, fallback_dir)
-        logger.warning(f"arbcore 目录不存在，使用降级目录: {fallback_dir}")
     else:
         raise RuntimeError(f"既找不到 {arbcore_dir}，也找不到 {fallback_dir}")
 
-# 1. [V3.11 统一数据库路径]
 root_db_path = os.path.abspath(os.path.join(workspace_root, "..", "database", "arb_master.db"))
-logger.info(f"📂 Using database at {root_db_path}")
-
-# Define project root (ArbDashboard directory)
 project_root = workspace_root
-logger.info(f"📁 Project root: {project_root}")
 
 try:
     from arbcore.database.db_manager import DatabaseManager
@@ -120,14 +115,15 @@ try:
         auto_trade_runner = DummyRunner()
         auto_trade_runner.engine = type("DummyEngine", (), {"rules": [], "add_rule": lambda *a: "", "update_rule": lambda *a: False, "delete_rule": lambda *a: None, "save_rules": lambda *a: None})()
     
-    logger.info("Core modules imported successfully")
+    _startup_logs = []
+    _startup_logs.append("✓ Core modules imported")
 except Exception as e:
     logger.error(f"Failed to import core modules: {e}")
     raise
 
 # 2. Initialize Database Manager FIRST
-# [V3.11] 使用统一数据库路径 D:\Study\arbTest\database\arb_master.db
 db = DatabaseManager(db_path=root_db_path)
+_startup_logs.append("✓ PostgreSQL connected")
 
 def _print_data_source_banners():
     """启动后统一打印各数据源连接状态（清晰的双层提醒标志）并写入里程碑日志"""
@@ -167,30 +163,26 @@ def _print_data_source_banners():
             logger.info(f"{label} 待连接")
             system_status.add_milestone("INFO", f"{label} {hint}")
 
-# 2. Initialize Services with DB instance
 config_service = ConfigService(db)
-# [V4.5 紧急隔离重构] 采用主从架构动态判断交易服务
+
 if lof_is_running:
     trading_service = None
-    logger.warning("[主从架构] 已禁用交易服务(TradingService)，以避免与运行中的主程序冲突。")
+    _startup_logs.append("○ Trading disabled (Master-Slave)")
 else:
     try:
-        # 如果主程序没运行，尝试启动交易服务 (仅供测试或单机模式)
         from services.trading_service import TradingService
         trading_service = TradingService(db)
-        
-        # [V4.7] 修改：放开通达信强制绑定限制，允许系统在只有 QMT 的情况下启动
-        if sys.platform == "win32" and (not trading_service.trade_manager or not getattr(trading_service.trade_manager, 'tdx_available', False)):
-            logger.warning("交易通道部分受限 (未检测到通达信登录)")
-            print("\n提示: tdx_available = False (如果您仅使用 QMT 交易，这完全正常)。系统将继续启动...\n")
+        tdx_available = getattr(trading_service.trade_manager, 'tdx_available', False) if trading_service.trade_manager else False
+        if tdx_available:
+            _startup_logs.append("✓ TDX connected")
         else:
-            logger.info("交易服务已就绪 (独立模式)")
+            _startup_logs.append("○ TDX not logged")
     except SystemExit:
-        logger.warning("交易服务初始化被中止 (SystemExit)，系统继续运行，交易功能不可用。")
         trading_service = None
+        _startup_logs.append("○ Trading aborted")
     except Exception as e:
-        logger.error(f"交易服务启动失败: {e}")
-        trading_service = None 
+        trading_service = None
+        logger.error(f"交易服务启动失败: {e}") 
 _active_watchlist = []
 _nav_last_updated = {"time": None, "date": None}
 _nav_scheduled_today_date = ""
@@ -236,21 +228,19 @@ def _popen_script_once(cmd, cwd, script_name: str) -> bool:
         logger.info(f"{script_name} is already running, skip duplicate launch")
         system_status.add_milestone("INFO", f"{script_name} 已在运行，跳过重复启动")
         return False
-    subprocess.Popen(cmd, cwd=cwd)
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    subprocess.Popen(cmd, cwd=cwd, creationflags=creationflags)
     return True
 
 # 3. Try to load Private Plugins
 try:
     from private.export_service import PrivateExportService
     export_service = PrivateExportService(root_db_path, project_root)
-    logger.info("Private export plugins loaded.")
-except (ImportError, NameError) as e:
+except (ImportError, NameError):
     export_service = None
-    logger.info(f"Private export plugins not found or initialization failed: {e}")
 
 try:
     from private.ghost_trader import ghost_trader_instance
-    # 注入实盘驱动
     ib_reader = getattr(market_data_service, 'ib_reader', None)
     galaxy_qmt = None
     guojin_qmt = None
@@ -259,18 +249,13 @@ try:
         galaxy_qmt = rt.active_fetchers.get('galaxy')
         guojin_qmt = rt.active_fetchers.get('guojin')
     ghost_trader_instance.inject_drivers(ib_reader=ib_reader, galaxy_qmt=galaxy_qmt, guojin_qmt=guojin_qmt)
-    logger.info("✅ Ghost Trader plugin loaded.")
-except (ImportError, NameError) as e:
+except (ImportError, NameError):
     ghost_trader_instance = None
-    logger.info(f"Ghost Trader plugin not found: {e}")
 
-# Ghost Simulator (weekend mock data)
 try:
     from private.ghost_simulator import ghost_simulator_instance
-    logger.info("Ghost Simulator loaded.")
-except (ImportError, NameError) as e:
+except (ImportError, NameError):
     ghost_simulator_instance = None
-    logger.info(f"Ghost Simulator not found: {e}")
 
 try:
     from private.signal_detector import signal_detector
@@ -278,33 +263,47 @@ try:
         rule_engine=auto_trade_runner.engine,
         fund_service=fund_service,
     )
-    logger.info("✅ SignalDetector loaded.")
-except (ImportError, NameError) as e:
+except (ImportError, NameError):
     signal_detector = None
-    logger.info(f"SignalDetector not loaded: {e}")
+
+def _print_startup_summary():
+    elapsed = (datetime.now() - _start_time).total_seconds()
+    
+    print("\n" + "="*50)
+    print("[启动] ArbNext")
+    
+    print("\n[数据库]")
+    for log in _startup_logs:
+        if "PostgreSQL" in log or "Core modules" in log:
+            print(f"  {log}")
+    
+    print("\n[交易]")
+    for log in _startup_logs:
+        if "TDX" in log or "Trading" in log:
+            print(f"  {log}")
+    
+    print("\n[服务]")
+    for log in _startup_logs:
+        if any(service in log for service in ["SamplerService", "DashboardSnapshot", "RealtimeEngine", "DailyUpdater"]):
+            print(f"  {log}")
+    
+    print("\n[完成]")
+    print(f"  系统启动成功")
+    print(f"  耗时：{elapsed:.2f}秒")
+    print("="*50 + "\n")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting ArbNext Backend lifespan...")
     try:
         import asyncio
         
-        # 1. [核心策略] 启动即运行一次 011 数据更新（异步，不需要通达信）
-        # 011只读取历史数据并写入数据库，与通达信实时行情不冲突
         async def run_011_first():
             if sys.platform != "win32":
-                logger.info("📊 [Cloud] 云端部署环境，静默跳过 011 本地数据更新任务")
-                system_status.add_milestone("INFO", "云端部署，跳过本地数据同步")
                 return
 
-            logger.info("📊 启动时自动运行 011 数据更新任务...")
-            system_status.add_milestone("INFO", "启动时自动运行 011 数据更新")
-            print("daily_updater 即将启动...")
-            # 调用 011 (指向统一的 daily_updater.py) 更新脚本
             scripts_dir = os.path.normpath(os.path.join(backend_dir, "..", "..", "arbcore", "scripts"))
             script_path = os.path.join(scripts_dir, "daily_updater.py")
             
-            # [V4.1] 尝试多种 Python 路径
             python_exe_candidates = [
                 os.path.normpath(os.path.join(backend_dir, "..", "..", ".venv", "Scripts", "python.exe")),
                 os.path.normpath(os.path.join(backend_dir, "..", "..", "..", ".venv", "Scripts", "python.exe")),
@@ -316,65 +315,38 @@ async def lifespan(app: FastAPI):
             for candidate in python_exe_candidates:
                 if os.path.exists(candidate):
                     python_exe = candidate
-                    logger.info(f"✅ 找到 Python: {python_exe}")
                     break
             
             if python_exe and os.path.exists(script_path):
                 try:
                     if _popen_script_once([python_exe, script_path], scripts_dir, "daily_updater.py"):
-                        logger.info("011 任务已在后台启动 (daily_updater)")
-                        system_status.add_milestone("SUCCESS", "011 数据更新任务已启动")
+                        _startup_logs.append("✓ DailyUpdater started")
                 except Exception as e:
                     logger.error(f"011 任务启动失败: {e}")
-                    system_status.add_milestone("ERROR", f"011 任务启动失败: {e}")
             else:
-                logger.info(f"ℹ️ 未检测到 011 脚本，跳过自动更新")
-                system_status.add_milestone("INFO", "未检测到 011 脚本，跳过自动更新")
+                _startup_logs.append("○ DailyUpdater skipped")
         
         asyncio.create_task(run_011_first())
 
-        # 2. 启动分时采样服务
         await sampler_service.start()
-        if sampler_service.running:
-            system_status.add_milestone("SUCCESS", "分时采样服务已启动")
-        else:
-            system_status.add_milestone("INFO", "分时采样服务未启动 (已配置禁用)")
+        _startup_logs.append("✓ SamplerService started")
 
-        # 3. 启动实时行情引擎（延迟10秒，等 011 任务先跑起来）
-        # 011 需要 1-2 分钟，通达信可以稍后启动
         await dashboard_snapshot_service.start()
-        system_status.add_milestone("SUCCESS", "Dashboard 快照服务已启动")
+        _startup_logs.append("✓ DashboardSnapshot started")
 
         async def start_mds_later():
             await asyncio.sleep(10)
             try:
                 market_data_service.realtime_manager.start()
-                logger.info("实时行情引擎已在后台启动")
-                system_status.add_milestone("SUCCESS", "实时行情引擎已启动")
+                _startup_logs.append("✓ RealtimeEngine started")
             except Exception as e:
                 logger.error(f"实时行情引擎启动失败: {e}")
-                system_status.add_milestone("ERROR", f"实时行情引擎启动失败: {e}")
 
-            # 延迟获取各数据源连接状态，确保所有异步初始化已完成
             await asyncio.sleep(2)
             _print_data_source_banners()
             
-            # [V10.0] 启动完成提示：引导用户手动连接需要的券商客户端
-            system_status.add_milestone("INFO", "💡 如需实时行情，请点击顶部对应按钮连接券商客户端（通达信/IB/银河QMT/国金QMT/富途）")
-        
         asyncio.create_task(start_mds_later())
 
-        # 4. SignalDetector（信号检测引擎 — 默认不启动，用户手动开启）
-        if signal_detector:
-            logger.info("SignalDetector 已就绪，等待用户手动启动")
-            system_status.add_milestone("INFO", "信号检测引擎就绪")
-        else:
-            logger.info("SignalDetector 未加载")
-            system_status.add_milestone("INFO", "信号检测引擎未加载")
-
-        # —— 旧版引擎完全禁用 ——
-
-        # 5. 定义脚本路径和 Python 查找的公共函数
         def _get_scripts_dir():
             return os.path.normpath(os.path.join(backend_dir, "..", "..", "arbcore", "scripts"))
         def _find_python():
@@ -394,7 +366,6 @@ async def lifespan(app: FastAPI):
                 return _popen_script_once([pe, sp] + args_list, sd, "daily_updater.py")
             return False
 
-        # 6. [V9.0] 9:20 清晨自动刷新 Woody/汇率/VPS
         global _morning_refreshed_today, _morning_refresh_time
         async def morning_refresh_scheduler():
             global _morning_refreshed_today, _morning_refresh_time
@@ -406,19 +377,16 @@ async def lifespan(app: FastAPI):
                     continue
                 today = now.strftime("%Y-%m-%d")
                 if _morning_refreshed_today and today != _morning_refresh_time:
-                    _morning_refreshed_today = False  # 新的一天
+                    _morning_refreshed_today = False
                 if not _morning_refreshed_today and now.hour >= 9 and (now.hour > 9 or now.minute >= 20):
                     _morning_refreshed_today = True
                     _morning_refresh_time = today
-                    logger.info("⏰ [清晨刷新] 自动触发 --refresh-morning (Woody/汇率/VPS)")
-                    system_status.add_milestone("INFO", "⏰ 9:20 自动清晨数据刷新")
                     if _run_daily_updater(["--refresh-morning"]):
                         logger.info("✅ [清晨刷新] 已启动 --refresh-morning")
                     else:
                         logger.warning("⚠️ [清晨刷新] 启动失败")
 
         asyncio.create_task(morning_refresh_scheduler())
-        logger.info("⏰ [清晨刷新] 定时器已注册 (9:20 自动刷新 Woody/汇率/VPS)")
 
         # 7. [V9.0] 净值定时更新：下午 18:00 / 19:30 / 21:00 自动补跑 step4
         global _nav_last_updated, _nav_scheduled_today_date
@@ -452,7 +420,8 @@ async def lifespan(app: FastAPI):
                             logger.warning(f"⚠️ [自动净值更新] 启动失败")
         
         asyncio.create_task(nav_update_scheduler())
-        logger.info("⏰ [自动净值更新] 定时器已注册 (18:00 / 19:30 / 21:00)")
+
+        _print_startup_summary()
 
     except Exception as e:
         logger.error(f"❌ Failed during backend startup: {e}")
@@ -568,7 +537,8 @@ async def get_fund_valuation_meta(code: str):
             "trade_future": trade_future
         }
         
-        basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=? AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=?)", conn, params=(code, code))
+        engine = fund_service.db.get_sqlalchemy_engine()
+        basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
         if not basket_df.empty:
             fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
         
@@ -593,9 +563,7 @@ async def get_fund_valuation_meta(code: str):
             except Exception as e:
                 logger.error(f"Failed to calculate missing hedge: {e}")
         
-        # 3. 获取最新汇率
-        conn = fund_service.db._get_conn()
-        fx_df = pd.read_sql("SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", conn)
+        fx_df = pd.read_sql("SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine)
         latest_fx = float(fx_df.iloc[0]['usd_cny_mid']) if not fx_df.empty else 7.0
         
         # 4. 获取最新实时行情 (用于标的 ETF 价格和期货价格)
@@ -1064,46 +1032,42 @@ async def ghost_place_order(request: Request):
         lof_quantity = int(body.get("quantity", 0))
         etf_quantity = int(body.get("etf_quantity", 0))
 
-        # 从 fund_daily_factors 获取 hedge 值（与 Analysis.vue 实时沙盘一致）
         if etf_quantity <= 0 and lof_quantity > 0:
             try:
-                conn2 = db._get_conn()
                 import pandas as pd
+                engine = db.get_sqlalchemy_engine()
                 h_df = pd.read_sql(
                     "SELECT hedge FROM fund_daily_factors "
-                    "WHERE fund_code=? AND hedge IS NOT NULL AND hedge > 0 "
+                    "WHERE fund_code=%s AND hedge IS NOT NULL AND hedge > 0 "
                     "ORDER BY date DESC LIMIT 1",
-                    conn2, params=[fund_code]
+                    engine, params=[fund_code]
                 )
                 if not h_df.empty:
                     hedge = float(h_df.iloc[0]['hedge'])
                 else:
-                    # 兜底：动态推算
                     pos_df = pd.read_sql(
                         "SELECT position FROM fund_daily_factors "
-                        "WHERE fund_code=? AND position IS NOT NULL ORDER BY date DESC LIMIT 1",
-                        conn2, params=[fund_code]
+                        "WHERE fund_code=%s AND position IS NOT NULL ORDER BY date DESC LIMIT 1",
+                        engine, params=[fund_code]
                     )
                     position = float(pos_df.iloc[0]['position']) if not pos_df.empty else 0.95
                     nav_df = pd.read_sql(
                         "SELECT nav, price FROM unified_fund_history "
-                        "WHERE fund_code=? AND nav>0 ORDER BY date DESC LIMIT 1",
-                        conn2, params=[fund_code]
+                        "WHERE fund_code=%s AND nav>0 ORDER BY date DESC LIMIT 1",
+                        engine, params=[fund_code]
                     )
                     nav = float(nav_df.iloc[0]['nav']) if not nav_df.empty else 1.0
                     fx_df = pd.read_sql(
-                        "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", conn2
+                        "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine
                     )
                     fx = float(fx_df.iloc[0]['usd_cny_mid']) if not fx_df.empty else 7.25
-                    # hedge = (ETF基价 * 汇率) / (净值 * 仓位)
-                    # 用 t1 的 etf 收盘价作为基价近似
                     etf_base = 0.0
                     if underlying_symbol:
                         etf_df = pd.read_sql(
                             "SELECT COALESCE(NULLIF(netvalue, 0), price) as price "
-                            "FROM usa_etf_daily_prices WHERE symbol LIKE ? "
+                            "FROM usa_etf_daily_prices WHERE symbol LIKE %s "
                             "ORDER BY date DESC LIMIT 1",
-                            conn2, params=[f"%{underlying_symbol}%"]
+                            engine, params=[f"%{underlying_symbol}%"]
                         )
                         if not etf_df.empty:
                             etf_base = float(etf_df.iloc[0]['price'])

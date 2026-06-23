@@ -52,13 +52,14 @@ _daily_snapshot = {
     'loaded': False,
 }
 
-def _ensure_daily_snapshot(conn):
+def _ensure_daily_snapshot(db):
     """中间价只加载一次（启动时），当天不变"""
     if _daily_snapshot['loaded']:
         return
     try:
+        engine = db.get_sqlalchemy_engine()
         fx_df = pd.read_sql(
-            "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", conn
+            "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine
         )
         if not fx_df.empty and fx_df.iloc[0]['usd_cny_mid'] > 0:
             _daily_snapshot['usd_cny_mid'] = fx_df.iloc[0]['usd_cny_mid']
@@ -181,7 +182,9 @@ def get_index_change_percent(symbol: str) -> float:
         'User-Agent': 'Mozilla/5.0'
     }
     
-    clean_sym = symbol.strip().upper()
+    if symbol is None:
+        return 0.0
+    clean_sym = str(symbol).strip().upper()
     if clean_sym.endswith('.CSI'):
         clean_sym = clean_sym[:-4]
     
@@ -277,7 +280,9 @@ _INDEX_CODE_MAP = {
 
 def _clean_index_symbol(sym: str) -> str:
     """对指数符号做清洗和映射，返回可用于 index_history 查询的代码"""
-    clean = sym.strip().upper()
+    if sym is None:
+        return ''
+    clean = str(sym).strip().upper()
     if not clean:
         return ''
     # 映射表
@@ -363,8 +368,9 @@ def _build_index_daily_fallback(symbols: List[str], conn, now) -> Dict[str, Dict
 
     # 2. 从 index_history 用 ROW_NUMBER pivot 取每个 symbol 最新两条收盘价
     #    LAG 在 rn=1 行永远是 NULL，所以改用 rn=1 和 rn=2 的 GROUP BY pivot
-    placeholders = ','.join(['?' for _ in clean_set])
-    rows = conn.execute(f"""
+    placeholders = ','.join(['%s' for _ in clean_set])
+    cursor = conn.cursor()
+    cursor.execute(f"""
         SELECT symbol,
             MAX(CASE WHEN rn = 1 THEN close END) as latest_close,
             MAX(CASE WHEN rn = 2 THEN close END) as prev_close
@@ -376,7 +382,9 @@ def _build_index_daily_fallback(symbols: List[str], conn, now) -> Dict[str, Dict
         )
         WHERE rn IN (1, 2)
         GROUP BY symbol
-    """, list(clean_set)).fetchall()
+    """, tuple(clean_set))
+    rows = cursor.fetchall()
+    cursor.close()
 
     # 3. 计算真实涨跌幅
     db_data = {}
@@ -533,7 +541,7 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
     
     for sym in symbols:
         if not sym or sym == '-': continue
-        clean_sym = sym.strip().upper()
+        clean_sym = str(sym).strip().upper()
 
         if any(etf in clean_sym for etf in US_ETF_KEYWORDS):
             continue
@@ -662,7 +670,7 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
     em_requests = {}  # original_sym -> secid
     for sym in symbols:
         if not sym or sym == '-': continue
-        clean_sym = sym.strip().upper()
+        clean_sym = str(sym).strip().upper()
         if any(etf in clean_sym for etf in US_ETF_KEYWORDS):
             continue
         if sym in res:
@@ -717,7 +725,7 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
     US_RELATED_SYMBOLS = {'.INX', '.NDX', '.SPHCMSHP', '.SPACEVCP', 'VNQ', 'H11136'}
     for sym in symbols:
         if not sym or sym == '-': continue
-        clean_sym_check = sym.strip().upper()
+        clean_sym_check = str(sym).strip().upper()
         if any(etf in clean_sym_check for etf in US_ETF_KEYWORDS):
             continue  # 美股ETF不报错，它们走IB/Futu
         if clean_sym_check in US_RELATED_SYMBOLS:
@@ -756,7 +764,7 @@ class FundService:
         if cached is not None:
             return cached
 
-        conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             # ── 1. SQL 级过滤基金列表（不下拉全量数据） ──
             where_clause = ""
@@ -773,7 +781,7 @@ class FundService:
 
             funds_df = pd.read_sql_query(
                 f"SELECT fund_code, fund_name, category, related_index, pos_ratio, idx_code, idx_name FROM unified_fund_list {where_clause}",
-                conn, params=params
+                engine, params=tuple(params)
             )
 
             if funds_df is None or funds_df.empty:
@@ -783,7 +791,7 @@ class FundService:
             # ── 2. 批量获取 fund_info 状态费率 ──
             status_df = pd.read_sql_query(
                 "SELECT fund_code, purchase_status, redemption_status, purchase_fee, redemption_fee FROM fund_info",
-                conn
+                engine
             )
             status_dict = status_df.set_index('fund_code').to_dict('index')
 
@@ -807,20 +815,20 @@ class FundService:
                 WHERE rn <= 10
                 ORDER BY fund_code, date DESC
                 """,
-                conn,
-                params=codes,
+                engine,
+                params=tuple(codes),
             )
             # 按 fund_code 分组，每组取前 10 条
             hist_grouped = hist_df.groupby('fund_code') if not hist_df.empty else {}
 
             # 【V7.0 工业级升级】 批量预取所有跟踪指数的日内涨跌幅
             all_related_indices = funds_df['related_index'].dropna().tolist()
-            index_changes_map = prefetch_index_changes(all_related_indices, conn=conn)
+            index_changes_map = prefetch_index_changes(all_related_indices, conn=self.db._get_conn())
 
             # 预查哪些基金有完整权重篮子（跳过简化指数估值，直接用计算器）
             funds_with_basket = set()
             try:
-                basket_codes_df = pd.read_sql("SELECT DISTINCT fund_code FROM fund_basket_weights", conn)
+                basket_codes_df = pd.read_sql("SELECT DISTINCT fund_code FROM fund_basket_weights", engine)
                 funds_with_basket = set(basket_codes_df['fund_code'].tolist())
             except:
                 pass
@@ -1052,7 +1060,7 @@ class FundService:
                             "trade_future": "CL" if "原油" in str(fund.get('fund_name')) else ("GC" if "金" in str(fund.get('fund_name')) else ("AG0" if "白银" in str(fund.get('fund_name')) else ""))
                         }
                         try:
-                            basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", conn, params=(code, code))
+                            basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
                             if not basket_df.empty:
                                 fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
                         except:
@@ -1063,7 +1071,7 @@ class FundService:
                             current_fx = None 
                             try:
                                 # [V10.1] 汇率当天不变，直接读内存
-                                _ensure_daily_snapshot(conn)
+                                _ensure_daily_snapshot(self.db)
                                 current_fx = _daily_snapshot.get('usd_cny_mid')
                             except:
                                 pass
@@ -1133,7 +1141,7 @@ class FundService:
                 if not metrics.get('rt_val') or metrics['rt_val'] <= 0:
                     try:
                         sample_query = "SELECT rt_val, premium FROM fund_intraday_quotes WHERE fund_code=%s ORDER BY date DESC, time DESC LIMIT 1"
-                        sample_df = pd.read_sql(sample_query, conn, params=(code,))
+                        sample_df = pd.read_sql(sample_query, engine, params=(code,))
                         if not sample_df.empty and sample_df.iloc[0]['rt_val'] > 0:
                             metrics['rt_val'] = sample_df.iloc[0]['rt_val']
                             metrics['rt_premium'] = sample_df.iloc[0]['premium']
@@ -1211,7 +1219,7 @@ class FundService:
         - 不过滤当天行（exchange_rate LEFT JOIN 可能带回当天汇率，用于显示）
         - 不将 None 填充为 0（让前端正确显示 '-'）
         """
-        conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             today = datetime.now().strftime('%Y-%m-%d')
 
@@ -1228,13 +1236,13 @@ class FundService:
             LEFT JOIN fund_daily_factors f ON h.date = f.date AND h.fund_code = f.fund_code
             WHERE h.fund_code = %s ORDER BY h.date DESC LIMIT 60
             """
-            df = pd.read_sql(query_hist, conn, params=(fund_code,))
+            df = pd.read_sql(query_hist, engine, params=(fund_code,))
             if df.empty: return []
 
             # 判断是否是港币基金。若是，在返回的 usd_cny_mid 字段里使用港币汇率 hkd_cny_mid
             is_hkd_fund = False
             try:
-                fund_info_df = pd.read_sql("SELECT category, idx_name FROM fund_info WHERE fund_code=%s LIMIT 1", conn, params=(fund_code,))
+                fund_info_df = pd.read_sql("SELECT category, idx_name FROM fund_info WHERE fund_code=%s LIMIT 1", engine, params=(fund_code,))
                 if not fund_info_df.empty:
                     cat = str(fund_info_df.iloc[0]['category'] or '')
                     idx_name = str(fund_info_df.iloc[0]['idx_name'] or '')
@@ -1462,16 +1470,19 @@ class FundService:
             # [通用] 获取该基金跟踪的ETF历史价格（如162411→XOP，160719→GLD+^GLD-EU，501225→SOXX）
             etf_price_map = {}  # {symbol: {date: {price, chg}}}
             try:
+                cursor = conn.cursor()
                 # 1) 从 related_index 获取主 ETF
-                fl_row = conn.execute("SELECT related_index FROM unified_fund_list WHERE fund_code=?", (fund_code,)).fetchone()
+                cursor.execute("SELECT related_index FROM unified_fund_list WHERE fund_code=%s", (fund_code,))
+                fl_row = cursor.fetchone()
                 trade_etf = fl_row[0] if fl_row and fl_row[0] and fl_row[0] != '-' else ''
                 etf_symbols = [trade_etf] if trade_etf else []
 
                 # 2) 从 basket 获取所有 ETF 符号（含锚点变体如 ^GLD-EU）
-                basket_rows = conn.execute(
-                    "SELECT DISTINCT underlying_symbol FROM fund_basket_weights WHERE fund_code=? AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=?)",
+                cursor.execute(
+                    "SELECT DISTINCT underlying_symbol FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)",
                     (fund_code, fund_code)
-                ).fetchall()
+                )
+                basket_rows = cursor.fetchall()
                 for br in basket_rows:
                     sym = br[0]
                     if sym and sym not in etf_symbols:
@@ -1479,10 +1490,11 @@ class FundService:
 
                 # 3) 逐个查询价格（仅查 usa_etf_daily_prices 里存在的）
                 for sym in etf_symbols:
-                    etf_rows = conn.execute(
-                        "SELECT date, price FROM usa_etf_daily_prices WHERE symbol=? ORDER BY date DESC",
+                    cursor.execute(
+                        "SELECT date, price FROM usa_etf_daily_prices WHERE symbol=%s ORDER BY date DESC",
                         (sym,)
-                    ).fetchall()
+                    )
+                    etf_rows = cursor.fetchall()
                     if etf_rows:
                         prices = {r[0]: r[1] for r in etf_rows}
                         dates_sorted = sorted(prices.keys(), reverse=True)
@@ -1494,6 +1506,7 @@ class FundService:
                         etf_price_map[sym] = {
                             d: {'price': prices[d], 'chg': etf_chg.get(d)} for d in prices
                         }
+                cursor.close()
             except Exception as e:
                 logger.warning(f"[FundHistory] 获取ETF历史价格失败 {fund_code}: {e}")
 
@@ -1560,7 +1573,7 @@ class FundService:
             pass  # PostgreSQL: 不关闭全局连接
 
     def get_market_overview(self, market_data_service=None) -> Dict[str, Any]:
-        conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         res = {"rates": {}, "usd_change": 0, "hkd_change": 0, "active_sources": [], "stats": {"fund_count": 0}}
         
         # [V4.6] 修复行情状态未显示的 Bug
@@ -1568,11 +1581,18 @@ class FundService:
             res["active_sources"] = market_data_service.get_active_source_names()
             
         try:
-            rates_df = pd.read_sql_query("SELECT * FROM exchange_rate ORDER BY date DESC LIMIT 2", conn)
+            rates_df = pd.read_sql_query("SELECT * FROM exchange_rate ORDER BY date DESC LIMIT 2", engine)
             if not rates_df.empty:
                 rates_dict = rates_df.iloc[0].to_dict()
-                # 过滤 NaN 值，防止 JSON 序列化失败
-                res["rates"] = {k: v for k, v in rates_dict.items() if pd.notna(v)}
+                usd_cny = rates_dict.get('usd_cny_mid') if pd.notna(rates_dict.get('usd_cny_mid')) else None
+                hkd_cny = rates_dict.get('hkd_cny_mid') if pd.notna(rates_dict.get('hkd_cny_mid')) else None
+                
+                # 处理汇率数据，NaN 值转换为 None，保留字段名
+                res["rates"] = {
+                    'usd_cny_mid': usd_cny,
+                    'hkd_cny_mid': hkd_cny,
+                    'date': rates_dict.get('date') if pd.notna(rates_dict.get('date')) else None,
+                }
                 # 计算涨跌幅（百分比）
                 if len(rates_df) >= 2:
                     current = rates_df.iloc[0]
@@ -1589,7 +1609,7 @@ class FundService:
                         curr_val = current['hkd_cny_mid']
                         if prev_val != 0:
                             res["hkd_change"] = ((curr_val - prev_val) / prev_val) * 100
-            count_df = pd.read_sql_query("SELECT count(*) as count FROM unified_fund_list", conn)
+            count_df = pd.read_sql_query("SELECT count(*) as count FROM unified_fund_list", engine)
             res["stats"]["fund_count"] = int(count_df.iloc[0]['count']) if not count_df.empty else 0
         except: pass
         finally: pass  # PostgreSQL: 不关闭全局连接
@@ -1597,17 +1617,17 @@ class FundService:
 
     def get_fund_intraday(self, fund_code: str, date: str = None) -> List[Dict[str, Any]]:
         if not date: date = pd.Timestamp.now().strftime('%Y-%m-%d')
-        conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             query = "SELECT time, price, rt_val, premium FROM fund_intraday_quotes WHERE fund_code = %s AND date = %s ORDER BY time ASC"
-            return pd.read_sql(query, conn, params=(fund_code, date)).to_dict(orient='records')
+            return pd.read_sql(query, engine, params=(fund_code, date)).to_dict(orient='records')
         finally: pass  # PostgreSQL: 不关闭全局连接
 
     def get_fund_basket(self, fund_code: str) -> List[Dict[str, Any]]:
-        conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             query = "SELECT underlying_symbol, weight, date FROM fund_basket_weights WHERE fund_code = %s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code = %s)"
-            return pd.read_sql_query(query, conn, params=(fund_code, fund_code)).to_dict(orient='records')
+            return pd.read_sql_query(query, engine, params=(fund_code, fund_code)).to_dict(orient='records')
         finally: pass  # PostgreSQL: 不关闭全局连接
     
     def get_valuation_meta(self, code: str) -> dict:
@@ -1617,6 +1637,7 @@ class FundService:
         """
         import traceback
         conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             cursor = conn.cursor()
             cursor.execute(
@@ -1645,7 +1666,7 @@ class FundService:
             basket_df = pd.read_sql(
                 "SELECT underlying_symbol as symbol, weight FROM fund_basket_weights "
                 "WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)",
-                conn, params=(code, code)
+                engine, params=(code, code)
             )
             if not basket_df.empty:
                 fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
@@ -1673,7 +1694,7 @@ class FundService:
 
             # 获取最新汇率
             fx_df = pd.read_sql(
-                "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", conn
+                "SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine
             )
             latest_fx = float(fx_df.iloc[0]['usd_cny_mid']) if not fx_df.empty else 7.0
 

@@ -26,6 +26,7 @@ class StaticValuationCalculator:
         # 1. 获取基础数据 (A股收盘价、净值、汇率、因子)
         # 暂时保留部分 SQL 以保证联表查询效率，但未来应封装进 Manager
         conn = self.db._get_conn()
+        engine = self.db.get_sqlalchemy_engine()
         try:
             # 获取核心日期基座
             query = """
@@ -39,7 +40,7 @@ class StaticValuationCalculator:
                 WHERE a.fund_code = %s
                 ORDER BY a.date DESC LIMIT 40
             """
-            df = pd.read_sql(query, conn, params=(code,))
+            df = pd.read_sql(query, engine, params=(code,))
             if df.empty:
                 logger.warning(f"  ⚠️ [{name}] 基础行情数据为空，跳过")
                 return False
@@ -55,11 +56,11 @@ class StaticValuationCalculator:
                 if any(suffix in sym for suffix in ['-JP', '-EU', '-HK']):
                     sym = f"^{sym}"
                 
-                etf_df = pd.read_sql(f'SELECT date, COALESCE(NULLIF(netvalue, 0), price) as "{sym}" FROM usa_etf_daily_prices WHERE symbol = %s', conn, params=(sym,))
+                etf_df = pd.read_sql(f'SELECT date, COALESCE(NULLIF(netvalue, 0), price) as "{sym}" FROM usa_etf_daily_prices WHERE symbol = %s', engine, params=(sym,))
                 df = pd.merge(df, etf_df, on='date', how='left')
                 
                 # 获取权重
-                weight_df = pd.read_sql('SELECT date, weight FROM fund_basket_weights WHERE fund_code = %s AND underlying_symbol = %s', conn, params=(code, sym))
+                weight_df = pd.read_sql('SELECT date, weight FROM fund_basket_weights WHERE fund_code = %s AND underlying_symbol = %s', engine, params=(code, sym))
                 weight_df.rename(columns={'weight': f'{sym}_weight'}, inplace=True)
                 df = pd.merge(df, weight_df, on='date', how='left')
 

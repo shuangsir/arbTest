@@ -174,29 +174,43 @@ class DataFetcher:
             if response.status_code == 200:
                 data = response.json()
                 date_info = ""
+                # 日期信息可能在 data.lastDate 或 head 中
                 if 'data' in data and 'lastDate' in data['data']:
                     date_info = data['data']['lastDate']
+                elif 'head' in data and 'lastDate' in data['head']:
+                    date_info = data['head']['lastDate']
                 logger.info(f"汇率数据日期: {date_info}")
                 
-                # 检查数据结构
+                # 检查数据结构：records 在根级别，不是在 data 对象内部
                 records = []
                 if 'records' in data:
                     records = data['records']
-                elif 'data' in data and 'records' in data['data']:
+                elif 'data' in data and isinstance(data['data'], dict) and 'records' in data['data']:
                     records = data['data']['records']
+                elif 'data' in data and isinstance(data['data'], list):
+                    records = data['data']
                 
                 logger.info(f"找到 {len(records)} 条汇率记录")
                 
                 # 遍历所有记录，查找美元和港币兑人民币汇率
                 res_rates = {}
                 for record in records:
-                    if 'vrtName' in record and 'price' in record:
-                        currency_name = record['vrtName']
-                        rate = record['price']
-                        if '美元' in currency_name or 'USD' in currency_name:
-                            res_rates['usd'] = float(rate)
-                        elif '港' in currency_name or 'HKD' in currency_name:
-                            res_rates['hkd'] = float(rate)
+                    if isinstance(record, dict):
+                        if 'vrtName' in record and 'price' in record:
+                            currency_name = record['vrtName']
+                            rate = record['price']
+                            if '美元' in currency_name or 'USD' in currency_name:
+                                res_rates['usd'] = float(rate)
+                            elif '港' in currency_name or 'HKD' in record.get('foreignCName', ''):
+                                res_rates['hkd'] = float(rate)
+                        # 也检查英文名称
+                        elif 'vrtEName' in record and 'price' in record:
+                            currency_name_en = record['vrtEName']
+                            rate = record['price']
+                            if 'USD' in currency_name_en:
+                                res_rates['usd'] = float(rate)
+                            elif 'HKD' in currency_name_en:
+                                res_rates['hkd'] = float(rate)
 
                 if 'usd' in res_rates:
                     logger.info(f"国家外汇管理局 - USD: {res_rates.get('usd')}, HKD: {res_rates.get('hkd')}")
