@@ -26,9 +26,9 @@ class WoodyAPIService:
         sync_key = f"{source_id}_batch"
         
         # 1. 防刷检查
-        if db.is_access_synced_today(today_str, sync_key):
+        if db.system.is_access_synced_today(today_str, sync_key):
             logger.info(f"✅ 今日已成功拉取过 {source_id}，防刷机制启动，跳过网络请求...")
-            raw_content = db.get_raw_api_data(today_str, source_id)
+            raw_content = db.system.get_raw_api_data(today_str, source_id)
             if not raw_content:
                 return None
             try:
@@ -77,7 +77,7 @@ class WoodyAPIService:
         raw_json_str = json.dumps(api_data, ensure_ascii=False, indent=2) if isinstance(api_data, dict) else str(api_data)
         
         # 3. 存入原始数据湖
-        db.save_raw_api_data(date=today_str, source=source_id, raw_content=raw_json_str)
+        db.system.save_raw_api_data(date=today_str, source=source_id, raw_content=raw_json_str)
 
         # 4. 智能生成 JSON / 动态宽表 CSV 备份
         os.makedirs(backup_dir, exist_ok=True)
@@ -125,7 +125,7 @@ class WoodyAPIService:
         # 5. 调用提纯入库逻辑
         WoodyAPIService.process(db, api_data, source_id)
 
-        db.mark_access_synced(today_str, sync_key)
+        db.system.mark_access_synced(today_str, sync_key)
         logger.info(f"✅ [{source_id}] 因子提纯入库与双备份完毕！")
         return api_data
 
@@ -151,7 +151,7 @@ class WoodyAPIService:
                     try:
                         calib_val = float(api_calib)
                         if calib_val > 0:
-                            db.upsert_futures_daily(date=api_date, symbol=db_sym, calibration=calib_val)
+                            db.market.upsert_futures_daily(date=api_date, symbol=db_sym, calibration=calib_val)
                             logging.info(f"✅ 从API同步全局校准值: {db_sym} = {calib_val} (日期: {api_date})")
                     except Exception as e:
                         logging.error(f"❌ 解析全局校准值 {sym} 失败: {e}")
@@ -171,7 +171,7 @@ class WoodyAPIService:
             hed = float(f_data['hedge']) if 'hedge' in f_data else None
             nav_val = float(f_data['netvalue']) if f_data.get('netvalue') else None
             
-            db.upsert_fund_factor(date=b_date, fund_code=fund_code, calibration=cal, hedge=hed, position=pos, nav=nav_val)
+            db.funds.upsert_fund_factor(date=b_date, fund_code=fund_code, calibration=cal, hedge=hed, position=pos, nav=nav_val)
             
             # 🌟 Woody API 返回了真实仓位时，同步更新 unified_fund_list.pos_ratio
             raw_pos = f_data.get('position')
@@ -186,7 +186,7 @@ class WoodyAPIService:
             if e_date and f_data.get('CNYest'):
                 try:
                     cny_est = float(f_data['CNYest'])
-                    db.upsert_exchange_rate(e_date, usd_cny_mid=cny_est)
+                    db.market.upsert_exchange_rate(e_date, usd_cny_mid=cny_est)
                 except Exception:
                     pass
             
@@ -201,12 +201,12 @@ class WoodyAPIService:
                     
                     # 1. 存入基准日价格
                     if price > 0 and clean_etf.startswith('^'): 
-                        db.upsert_usa_etf_price(date=b_date, symbol=clean_etf, price=price)
+                        db.market.upsert_usa_etf_price(date=b_date, symbol=clean_etf, price=price)
                     
                     # 2. 存入估值日价格 (直接替代爬虫的数据)
                     if est_price > 0 and e_date and clean_etf.startswith('^'):
-                        db.upsert_usa_etf_price(date=e_date, symbol=clean_etf, price=est_price)
+                        db.market.upsert_usa_etf_price(date=e_date, symbol=clean_etf, price=est_price)
                         
-                    if ratio != 0: db.upsert_fund_basket_weight(date=b_date, fund_code=fund_code, underlying_symbol=clean_etf, weight=ratio)
+                    if ratio != 0: db.funds.upsert_fund_basket_weight(date=b_date, fund_code=fund_code, underlying_symbol=clean_etf, weight=ratio)
                     
         return api_data

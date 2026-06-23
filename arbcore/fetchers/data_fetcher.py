@@ -2,14 +2,20 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 import time
 import re
 import sys
 import os
+
+# Selenium 导入（可选，用于网页爬虫）
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from webdriver_manager.chrome import ChromeDriverManager
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,7 +64,7 @@ class DataFetcher:
         today_str = datetime.now().strftime('%Y-%m-%d')
         source_key = "akshare_fund_status"
         
-        if db_manager.is_access_synced_today(today_str, source_key):
+        if db_manager.system.is_access_synced_today(today_str, source_key):
             logger.info("今日已成功同步 AKShare 申赎状态，触发防刷保护，直接使用数据库缓存。")
             return
             
@@ -93,7 +99,7 @@ class DataFetcher:
                 df_records = pd.DataFrame(records)
                 db_manager.batch_save_fund_purchase_status(df_records)
                 
-                db_manager.mark_access_synced(today_str, source_key)
+                db_manager.system.mark_access_synced(today_str, source_key)
                 logger.info(f"成功获取并缓存了 {len(df_records)} 只基金的状态数据！")
                 
         except ImportError:

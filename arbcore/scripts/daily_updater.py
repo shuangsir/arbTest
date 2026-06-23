@@ -109,7 +109,7 @@ class DailyUpdater(BaseApp):
                 
                 # [性能优化] 如果数据库已经同步过该日期，且本地已存在该文件，则直接跳过读取，减少内存压力
                 sync_key = f"{data_type}_vps_sync"
-                if os.path.exists(local_path) and self.db.is_access_synced_today(file_date, sync_key):
+                if os.path.exists(local_path) and self.db.system.is_access_synced_today(file_date, sync_key):
                     continue
 
                 # 3. 增量同步：如果本地不存在，则下载
@@ -156,22 +156,23 @@ class DailyUpdater(BaseApp):
         sync_key = "woody_lof_batch"
         
         # 🛡️ 总闸检查：如果今日已经处理过（无论是通过 VPS 还是 API），直接跳过整个步骤
-        if self.db.is_access_synced_today(today_str, sync_key):
+        if self.db.system.is_access_synced_today(today_str, sync_key):
             self.logger.info(f"✅ 今日 Woody 因子已处理完毕（防刷标记 {sync_key} 已存在），跳过 VPS 同步与 API 请求。")
             return True
 
         # 🛡️ 数据库检查：如果库里已有今天的 Woody 因子数据，无需连 VPS
         try:
             conn = self.db._get_conn()
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM raw_api_data WHERE date = ? AND source = 'woody_lof'",
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM raw_api_data WHERE date = %s AND source = 'woody_lof'",
                 (today_str,)
             )
             count = cursor.fetchone()[0]
             conn.close()
             if count > 0:
                 self.logger.info(f"✅ 今日({today_str}) Woody 原始数据已在库中({count}条)，无需连VPS，直接标记完成。")
-                self.db.mark_access_synced(today_str, sync_key)
+                self.db.system.mark_access_synced(today_str, sync_key)
                 return True
         except Exception as e:
             self.logger.warning(f"检查 Woody 数据库时出错: {e}，继续连接VPS获取")
@@ -194,14 +195,14 @@ class DailyUpdater(BaseApp):
                     if api_content:
                         # 1. 存入本地原始数据湖 (Data Lake)
                         raw_json_str = json.dumps(api_content, ensure_ascii=False, indent=2)
-                        self.db.save_raw_api_data(date=file_date, source='woody_lof', raw_content=raw_json_str)
+                        self.db.system.save_raw_api_data(date=file_date, source='woody_lof', raw_content=raw_json_str)
                         
                         # 2. 调用核心解析引擎提取因子
                         processed_data = WoodyAPIService.process(self.db, api_content, source_id='woody_lof')
                         if processed_data:
                             self.logger.info(f"   ✅ [VPS] 日期 {file_date} 的因子解析成功")
                             # [性能优化] 标记该日期已处理，下次不再重复解析
-                            self.db.mark_access_synced(file_date, sync_key)
+                            self.db.system.mark_access_synced(file_date, sync_key)
                             if file_date == today_str:
                                 vps_today_success = True
                 except Exception as e:
@@ -209,7 +210,7 @@ class DailyUpdater(BaseApp):
         
         # 如果 VPS 已经搞定了今天的数据，直接打标并收工
         if vps_today_success:
-            self.db.mark_access_synced(today_str, sync_key)
+            self.db.system.mark_access_synced(today_str, sync_key)
             self.logger.info(f"✅ [VPS] 今日数据已通过云端同步完成，已标记 {sync_key} 成功。")
             return True
 
@@ -267,7 +268,7 @@ class DailyUpdater(BaseApp):
                 if not code: continue
                 
                 # 1. 查询最新仓位
-                pos_df = pd.read_sql("SELECT position FROM fund_daily_factors WHERE fund_code=? ORDER BY date DESC LIMIT 1", conn, params=(code,))
+                pos_df = pd.read_sql("SELECT position FROM fund_daily_factors WHERE fund_code=%s ORDER BY date DESC LIMIT 1", conn, params=(code,))
                 if not pos_df.empty and pd.notna(pos_df.iloc[0]['position']):
                     new_pos = float(pos_df.iloc[0]['position'])
                     if new_pos <= 1.5: new_pos = new_pos * 100  # 转换为百分比(防呆设计)
@@ -282,7 +283,7 @@ class DailyUpdater(BaseApp):
                         self.logger.info(f"🔄 [{code}] YAML仓位已同步: {old_pos}% -> {new_pos:.2f}%")
                 
                 # 2. 查询最新权重
-                weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=? AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=?)", conn, params=(code, code))
+                weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", conn, params=(code, code))
                 if not weight_df.empty:
                     db_weights = {row['underlying_symbol'].replace('^', ''): float(row['weight']) for _, row in weight_df.iterrows() if pd.notna(row['weight'])}
                     
@@ -347,15 +348,16 @@ class DailyUpdater(BaseApp):
         # 🛡️ 数据库检查：如果库里已有今天的汇率数据，无需连 VPS
         try:
             conn = self.db._get_conn()
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM exchange_rate WHERE date = ? AND usd_cny_mid IS NOT NULL",
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM exchange_rate WHERE date = %s AND usd_cny_mid IS NOT NULL",
                 (today_str,)
             )
             count = cursor.fetchone()[0]
             conn.close()
             if count > 0:
                 self.logger.info(f"✅ 今日({today_str})汇率已在库中，无需连VPS，直接跳过。")
-                self.db.mark_access_synced(today_str, source='official_exchange_rate')
+                self.db.system.mark_access_synced(today_str, source='official_exchange_rate')
                 return
         except Exception as e:
             self.logger.warning(f"检查汇率数据库时出错: {e}，继续连接VPS获取")
@@ -373,18 +375,18 @@ class DailyUpdater(BaseApp):
                     hkd_val = content.get('hkd_cny_mid')
                     if date_info and usd_val:
                         date_info_str = pd.to_datetime(str(date_info)).strftime('%Y-%m-%d')
-                        self.db.upsert_exchange_rate(date_info_str, usd_cny_mid=usd_val, hkd_cny_mid=hkd_val)
+                        self.db.market.upsert_exchange_rate(date_info_str, usd_cny_mid=usd_val, hkd_cny_mid=hkd_val)
                         self.logger.info(f"   ✅ [VPS] 同步入库汇率: {date_info_str} -> USD:{usd_val}, HKD:{hkd_val}")
                         # 标记云端文件在此日期已完成同步
-                        self.db.mark_access_synced(file_date, 'fx_vps_sync')
+                        self.db.system.mark_access_synced(file_date, 'fx_vps_sync')
                         # 只有当同步得到的汇率真实日期就是今天（或更晚），我们才认为今日汇率已同步完成
                         if date_info_str >= today_str:
-                            self.db.mark_access_synced(today_str, source='official_exchange_rate')
+                            self.db.system.mark_access_synced(today_str, source='official_exchange_rate')
                 except Exception as e:
                     self.logger.error(f"   ❌ [VPS] 解析日期 {file_date} 汇率时出错: {e}")
 
         # 检查今天是否已经同步到最新的汇率
-        if self.db.is_access_synced_today(today_str, source='official_exchange_rate'):
+        if self.db.system.is_access_synced_today(today_str, source='official_exchange_rate'):
             self.logger.info("✅ 今日已同步过人民币中间价，跳过实时抓取。")
             return
 
@@ -399,13 +401,13 @@ class DailyUpdater(BaseApp):
                     date_info_str = pd.to_datetime(str(date_info)).strftime('%Y-%m-%d')
                     usd_val = exchange_rate_data.get('usd_cny_mid')
                     hkd_val = exchange_rate_data.get('hkd_cny_mid')
-                    self.db.upsert_exchange_rate(date_info_str, usd_cny_mid=usd_val, hkd_cny_mid=hkd_val)
+                    self.db.market.upsert_exchange_rate(date_info_str, usd_cny_mid=usd_val, hkd_cny_mid=hkd_val)
                     self.logger.info(f"✅ 人民币中间价入库: {date_info_str} -> USD:{usd_val}, HKD:{hkd_val}")
                     
                     # 关键修复：只有当抓取到的汇率实际生效日期是今天（或更晚）时，才标记今日已同步
                     # 如果抓到的是昨天的日期，说明今天最新的还没更新，我们绝不标记今日同步，以便稍后重试
                     if date_info_str >= today_str:
-                        self.db.mark_access_synced(today_str, source='official_exchange_rate')
+                        self.db.system.mark_access_synced(today_str, source='official_exchange_rate')
                         self.logger.info(f"✅ 成功获取到今日 ({today_str}) 最新汇率，已打标。")
                     else:
                         self.logger.warning(f"⚠️ 抓取到的汇率日期为过去日期 ({date_info_str})，未更新到今天，因此不标记今日已同步。")
@@ -418,10 +420,10 @@ class DailyUpdater(BaseApp):
         row = None
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT price, nav FROM fund_data WHERE date=? AND fund_code=?", (date_str, fund_code))
+            cursor.execute("SELECT price, nav FROM fund_data WHERE date=%s AND fund_code=%s", (date_str, fund_code))
             row = cursor.fetchone()
         finally:
-            conn.close()
+            pass  # PostgreSQL: 不关闭全局连接
             
         exist_price = row[0] if row and row[0] is not None else None
         exist_nav = row[1] if row and row[1] is not None else None
@@ -433,10 +435,10 @@ class DailyUpdater(BaseApp):
         if new_price is not None and new_nav is not None and float(new_nav) > 0:
             premium = (float(new_price) - float(new_nav)) / float(new_nav) * 100
             
-        self.db.save_fund_data(date=date_str, fund_code=fund_code, price=new_price, nav=new_nav, premium=premium)
+        self.db.funds.save_fund_data(date=date_str, fund_code=fund_code, price=new_price, nav=new_nav, premium=premium)
         
         # [核心增强] 同步写入大一统历史表，确保 Vue 看板有数
-        self.db.save_unified_history(
+        self.db.funds.save_unified_history(
             date_str=date_str, 
             fund_code=fund_code, 
             price=new_price, 
@@ -452,7 +454,10 @@ class DailyUpdater(BaseApp):
 
         # 从大一统基金列表获取所有基金代码（覆盖 QDII亚洲/国内LOF/债券货币等 lof_config.yaml 未收录的品种）
         conn_ufl = self.db._get_conn()
-        all_fund_rows = conn_ufl.execute("SELECT fund_code FROM unified_fund_list").fetchall()
+        cur = conn_ufl.cursor()
+        cur.execute("SELECT fund_code FROM unified_fund_list")
+        all_fund_rows = cur.fetchall()
+        cur.close()
         conn_ufl.close()
         all_codes = [str(r[0]) for r in all_fund_rows if r[0]]
         self.logger.info(f"📋 unified_fund_list 共 {len(all_codes)} 只基金，开始遍历净值/价格同步...")
@@ -461,15 +466,15 @@ class DailyUpdater(BaseApp):
             if not code: continue
                 
             # --- 1. 获取收盘价 (Sina) ---
-            if not self.db.is_access_synced_today(today_str, source=f'lof_price_{code}'):
+            if not self.db.system.is_access_synced_today(today_str, source=f'lof_price_{code}'):
                 price_df = self.hist_manager.get_prices(code, source="sina")
                 if not price_df.empty:
                     for _, row in price_df.iterrows():
                         d_str = row['date'].strftime('%Y-%m-%d')
                         self._safe_save_fund_data(date_str=d_str, fund_code=code, price=row['close'])
                         # 记录更多指标到大一统表
-                        self.db.save_unified_history(date_str=d_str, fund_code=code, volume=row.get('volume'), turnover_rate=row.get('turnover_rate'))
-                    self.db.mark_access_synced(today_str, source=f'lof_price_{code}')
+                        self.db.funds.save_unified_history(date_str=d_str, fund_code=code, volume=row.get('volume'), turnover_rate=row.get('turnover_rate'))
+                    self.db.system.mark_access_synced(today_str, source=f'lof_price_{code}')
                     self.logger.info(f"✅ [{code}] 历史价格同步完成")
 
             # --- 2. 获取东财净值 ---
@@ -486,9 +491,9 @@ class DailyUpdater(BaseApp):
             
             conn = self.db._get_conn()
             cursor = conn.cursor()
-            cursor.execute("SELECT MAX(date) FROM fund_data WHERE fund_code = ? AND nav IS NOT NULL", (code,))
+            cursor.execute("SELECT MAX(date) FROM fund_data WHERE fund_code = %s AND nav IS NOT NULL", (code,))
             max_nav_row = cursor.fetchone()
-            conn.close()
+            pass  # PostgreSQL: 不关闭全局连接
             
             db_max_nav_date = max_nav_row[0] if max_nav_row and max_nav_row[0] else "2000-01-01"
             
@@ -497,7 +502,7 @@ class DailyUpdater(BaseApp):
                     self.logger.info(f"⏳ [{code}] 当前未到15:00，T-1净值未发。本地已拥有T-2及之前最新净值({db_max_nav_date})，暂不请求东财。")
                 else:
                     self.logger.info(f"✅ [{code}] 数据库已存在预期最新净值 ({db_max_nav_date})，跳过东财接口...")
-                self.db.mark_access_synced(today_str, source=f'lof_nav_{code}')
+                self.db.system.mark_access_synced(today_str, source=f'lof_nav_{code}')
                 continue
                 
             self.logger.info(f"🔍 [{code}] 数据库最新净值({db_max_nav_date})落后于预期进度({expected_nav_date})，前往东财获取...")
@@ -509,7 +514,7 @@ class DailyUpdater(BaseApp):
                     d_str = row['date'].strftime('%Y-%m-%d')
                     self._safe_save_fund_data(date_str=d_str, fund_code=code, nav=row['nav'])
                 if latest_nav_date >= expected_nav_date:
-                    self.db.mark_access_synced(today_str, source=f'lof_nav_{code}')
+                    self.db.system.mark_access_synced(today_str, source=f'lof_nav_{code}')
             else:
                 self.logger.warning(f"⚠️ [{code}] 东财接口未返回任何净值数据。")
 
@@ -520,7 +525,7 @@ class DailyUpdater(BaseApp):
         start_date = (datetime.now() - timedelta(days=15)).strftime('%Y-%m-%d')
 
         # access_sync_status 防刷：今天已跑过步骤五就跳过
-        if self.db.is_access_synced_today(today_str, source='usa_etf_data'):
+        if self.db.system.is_access_synced_today(today_str, source='usa_etf_data'):
             self.logger.info("⏭️ [海外/指数] 今日已抓取，跳过步骤五")
             return
 
@@ -537,15 +542,15 @@ class DailyUpdater(BaseApp):
             if not df.empty:
                 for _, row in df.iterrows():
                     date_str = row['date'].strftime('%Y-%m-%d')
-                    self.db.upsert_usa_etf_price(date=date_str, symbol=sym, price=row['close'])
+                    self.db.market.upsert_usa_etf_price(date=date_str, symbol=sym, price=row['close'])
                     # 同步更新大一统表中的指数价格
                     for fund in self.config.get('funds', []):
                         for item in fund.get('valuation_portfolio', []) + fund.get('hedging_portfolio', []):
                             if sym in str(item.get('symbol', '')):
-                                self.db.save_unified_history(date_str=date_str, fund_code=fund['code'], index_close=row['close'])
+                                self.db.funds.save_unified_history(date_str=date_str, fund_code=fund['code'], index_close=row['close'])
                 self.logger.info(f"✅ [海外/指数] {sym} 行情同步完成")
 
-        self.db.mark_access_synced(today_str, source='usa_etf_data')
+        self.db.system.mark_access_synced(today_str, source='usa_etf_data')
         self.logger.info(f"✅ [海外/指数] 步骤五完成，已标记防刷")
 
     def step6_fetch_woody_regional_etfs(self):
@@ -579,7 +584,7 @@ class DailyUpdater(BaseApp):
         
         etfs_needing_update = []
         for sym in regional_etfs:
-            latest_date = self.db.get_latest_usa_etf_date(sym)
+            latest_date = self.db.market.get_latest_usa_etf_date(sym)
             # 如果最新日期是今天或昨天，就认为是最新的（考虑时差）
             if not latest_date or latest_date not in [today_str, yesterday_str]:
                 etfs_needing_update.append(sym)
@@ -605,7 +610,7 @@ class DailyUpdater(BaseApp):
                     date_str = row['日期']
                     price = row['价格']
                     if price > 0:
-                        self.db.upsert_usa_etf_price(date=date_str, symbol=sym, price=price)
+                        self.db.market.upsert_usa_etf_price(date=date_str, symbol=sym, price=price)
                         saved_count += 1
                 self.logger.info(f"✅ 区域变种 [{sym}] 历史行情入库完成，共更新 {saved_count} 天。")
             else:
@@ -614,7 +619,7 @@ class DailyUpdater(BaseApp):
         if missing_etfs:
             self.logger.error(f"🚨 健壮性告警：以下 Woody 区域变种 ETF 数据抓取失败：{', '.join(missing_etfs)}")
         else:
-            self.db.mark_access_synced(today_str, source='regional_etf')
+            self.db.system.mark_access_synced(today_str, source='regional_etf')
 
 
     def step7_fetch_extra_calibrations(self):
@@ -622,12 +627,12 @@ class DailyUpdater(BaseApp):
         self.logger.info("=== 步骤七：获取核心指数/商品校准值 (API优先模式) ===")
 
         today_str = datetime.now().strftime('%Y-%m-%d')
-        if self.db.is_access_synced_today(today_str, source='woody_extra_calibrations'):
+        if self.db.system.is_access_synced_today(today_str, source='woody_extra_calibrations'):
             self.logger.info("✅ 今日已成功同步校准值，跳过...")
             return
 
         # 🌟 优先尝试从刚刚抓取的 API 原始数据湖中提取
-        raw_json_str = self.db.get_raw_api_data(today_str, source='woody_lof')
+        raw_json_str = self.db.system.get_raw_api_data(today_str, source='woody_lof')
         api_success = False
         
         if raw_json_str:
@@ -646,7 +651,7 @@ class DailyUpdater(BaseApp):
                         date_str = item.get('est_date', item.get('date', today_str))
                         
                         if calib_val:
-                            self.db.upsert_futures_daily(date=date_str, symbol=db_sym, calibration=float(calib_val))
+                            self.db.market.upsert_futures_daily(date=date_str, symbol=db_sym, calibration=float(calib_val))
                             self.logger.info(f"✅ [API] {db_sym} ({date_str}) -> {calib_val} 同步成功。")
                             found_count += 1
                 
@@ -657,7 +662,7 @@ class DailyUpdater(BaseApp):
                 self.logger.error(f"❌ 从 API 缓存解析校准值失败: {e}")
 
         if api_success:
-            self.db.mark_access_synced(today_str, source='woody_extra_calibrations')
+            self.db.system.mark_access_synced(today_str, source='woody_extra_calibrations')
             return
 
         # --- 备选方案：原来的网页爬虫 (已因 Woody 强制登录失效，仅作备份参考) ---
@@ -686,12 +691,12 @@ class DailyUpdater(BaseApp):
             date_str = calibration_values.get(f'{key}_date', '')
 
             if calib_val and calib_val > 0:
-                self.db.upsert_futures_daily(date=date_str, symbol=db_sym, calibration=calib_val)
+                self.db.market.upsert_futures_daily(date=date_str, symbol=db_sym, calibration=calib_val)
                 self.logger.info(f"✅ [网页备份] {db_sym} ({date_str}) -> {calib_val} 入库成功。")
             else:
                 self.logger.warning(f"⚠️ [{db_sym}] 获取到的校准值无效，跳过入库。")
                 
-        self.db.mark_access_synced(today_str, source='woody_extra_calibrations')
+        self.db.system.mark_access_synced(today_str, source='woody_extra_calibrations')
 
 
     def step8_fetch_sina_futures_from_vps(self):
@@ -700,7 +705,7 @@ class DailyUpdater(BaseApp):
         today_str = datetime.now().strftime('%Y-%m-%d')
         
         # 如果今天的数据已经同步成功过，直接跳过
-        if self.db.is_access_synced_today(today_str, source='futures_data'):
+        if self.db.system.is_access_synced_today(today_str, source='futures_data'):
             self.logger.info("✅ 今日已同步过期货数据，跳过抓取。")
             return
             
@@ -721,17 +726,17 @@ class DailyUpdater(BaseApp):
                         close_price = f_data.get('close')
                         
                         if symbol and (settle is not None or close_price is not None):
-                            self.db.upsert_futures_daily(date=date_info, symbol=symbol, settle_price=settle, close_price=close_price)
+                            self.db.market.upsert_futures_daily(date=date_info, symbol=symbol, settle_price=settle, close_price=close_price)
                     
                     self.logger.info(f"   ✅ [VPS] 同步入库期货数据: {date_info} ({len(futures_list)} 个品种)")
-                    self.db.mark_access_synced(file_date, 'futures_vps_sync')
+                    self.db.system.mark_access_synced(file_date, 'futures_vps_sync')
                     if date_info >= today_str:
                         vps_today_success = True
                 except Exception as e:
                     self.logger.error(f"   ❌ [VPS] 解析日期 {file_date} 期货数据时出错: {e}")
 
         if vps_today_success:
-            self.db.mark_access_synced(today_str, source='futures_data')
+            self.db.system.mark_access_synced(today_str, source='futures_data')
             self.logger.info("✅ [VPS] 今日期货数据同步完成！")
             return
             
@@ -745,8 +750,8 @@ class DailyUpdater(BaseApp):
                 settle = f_data.get('settle')
                 close_price = f_data.get('close')
                 if symbol and (settle is not None or close_price is not None):
-                    self.db.upsert_futures_daily(date=today_str, symbol=symbol, settle_price=settle, close_price=close_price)
-            self.db.mark_access_synced(today_str, source='futures_data')
+                    self.db.market.upsert_futures_daily(date=today_str, symbol=symbol, settle_price=settle, close_price=close_price)
+            self.db.system.mark_access_synced(today_str, source='futures_data')
             self.logger.info(f"✅ [本地兜底] 今日期货数据获取完成！")
         else:
             self.logger.error("❌ [本地兜底] 获取期货数据失败。")
@@ -779,7 +784,7 @@ class DailyUpdater(BaseApp):
                         if shares is not None:
                             # 去掉 sh/sz 前缀，保持 fund_code 统一的 6 位数字格式
                             clean_code = fund_code_raw.lower().replace('sh', '').replace('sz', '')
-                            self.db.save_unified_history(date_str=file_date, fund_code=clean_code, shares=shares)
+                            self.db.funds.save_unified_history(date_str=file_date, fund_code=clean_code, shares=shares)
                             count += 1
                     
                     self.logger.info(f"   ✅ [VPS] 入库份额数据: {file_date} ({count} 个品种)")
@@ -791,7 +796,7 @@ class DailyUpdater(BaseApp):
             
             # 标记今日已同步（防止其他入口重复触发）
             if any(item['date'] >= today_str for item in vps_shares_data):
-                self.db.mark_access_synced(today_str, source='jsl_shares_data')
+                self.db.system.mark_access_synced(today_str, source='jsl_shares_data')
         else:
             self.logger.warning("⚠️ [VPS] 未获取到份额数据 (可能VPS采集失败或网络问题)")
 
@@ -816,25 +821,25 @@ class DailyUpdater(BaseApp):
                 self.logger.error(f"  ❌ [{fund.get('code')}] 静态估值计算失败: {e}")
         self.logger.info(f"✅ [静态估值] 计算完成，{success}/{len(config.get('funds', []))} 只基金已更新")
 
-    def run(self, nav_only=False, refresh_morning=False):
+    def run(self, nav_only=False, refresh_morning=False, force=False):
         today_str = datetime.now().strftime('%Y-%m-%d')
         now = datetime.now()
 
         if refresh_morning:
             self.logger.info("🚀 [清晨刷新] 清除9:20前旧标记，重新抓取 Woody/汇率/VPS 上午数据...")
-            if now.weekday() in (5, 6):
+            if now.weekday() in (5, 6) and not force:
                 self.logger.info("📅 周末跳过。")
                 return
             for src in ['woody_lof_batch', 'official_exchange_rate', 'futures_data', 'jsl_shares_data']:
                 self.logger.info(f"🗑️ 清除 {src} 标记")
-                self.db.remove_access_sync_status(today_str, src)
+                self.db.system.remove_access_sync_status(today_str, src)
             self._run_pipeline()
             self.logger.info("🎉 [清晨刷新] Woody/汇率/VPS 数据已重新同步！")
             return
 
         if nav_only:
             self.logger.info("🚀 [NAV模式] 仅执行净值更新 (step4)...")
-            if now.weekday() in (5, 6):
+            if now.weekday() in (5, 6) and not force:
                 self.logger.info("📅 周末跳过净值更新。")
                 return
             self.step4_fetch_lof_market()
@@ -842,7 +847,7 @@ class DailyUpdater(BaseApp):
             return
 
         # 默认：完整流水线
-        if now.weekday() in (5, 6):
+        if now.weekday() in (5, 6) and not force:
             self.logger.info("📅 [周末免打扰] 跳过每日数据大一统更新流水线。")
             return
         self._run_pipeline()
@@ -867,6 +872,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ArbNext 日度数据流水线")
     parser.add_argument("--nav-only", action="store_true", help="仅更新基金净值 (step4)")
     parser.add_argument("--refresh-morning", action="store_true", help="清除上午标记后重新抓取 Woody/汇率/VPS")
+    parser.add_argument("--force", action="store_true", help="强制执行，忽略周末检查")
     args = parser.parse_args()
 
     # 进程互斥锁（跨平台）：用 PID 文件防多实例
@@ -905,7 +911,7 @@ if __name__ == "__main__":
             locked = True
 
     try:
-        DailyUpdater().run(nav_only=args.nav_only, refresh_morning=args.refresh_morning)
+        DailyUpdater().run(nav_only=args.nav_only, refresh_morning=args.refresh_morning, force=args.force)
     finally:
         if locked:
             try:

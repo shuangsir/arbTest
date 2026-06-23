@@ -92,7 +92,7 @@ def import_basic_csv_to_db():
                     hedge = float(row[hedge_col]) if hedge_col in row and pd.notna(row[hedge_col]) and str(row[hedge_col]).strip() != 'nan' else None
                     
                     # 旧表里没有 position(仓位)和 nav，这里填 None，后续从 config 或 API 更新
-                    db.upsert_fund_factor(parsed_date, code, calibration=calibration, hedge=hedge, position=None)
+                    db.funds.upsert_fund_factor(parsed_date, code, calibration=calibration, hedge=hedge, position=None)
                     
             success_count += 1
         except Exception as e:

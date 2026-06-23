@@ -445,12 +445,12 @@ class FundService:
             where_clause = ""
             params: List[Any] = []
             if watchlist:
-                placeholders = ",".join("?" for _ in watchlist)
+                placeholders = ",".join("%s" for _ in watchlist)
                 where_clause = f"WHERE fund_code IN ({placeholders})"
                 params.extend(watchlist)
             elif category:
                 cats = _TAB_CATEGORY_MAP.get(category, [category])
-                placeholders = ",".join("?" for _ in cats)
+                placeholders = ",".join("%s" for _ in cats)
                 where_clause = f"WHERE category IN ({placeholders})"
                 params.extend(cats)
 
@@ -472,7 +472,7 @@ class FundService:
 
             # ── 3. 一次性批量拉取所有基金的历史记录 ──
             codes = funds_df['fund_code'].tolist()
-            code_placeholders = ",".join("?" for _ in codes)
+            code_placeholders = ",".join("%s" for _ in codes)
             hist_df = pd.read_sql_query(
                 f"""
                 SELECT fund_code, date, price, nav, static_val, static_premium,
@@ -734,7 +734,7 @@ class FundService:
                             "trade_future": "CL" if "原油" in str(fund.get('fund_name')) else ("GC" if "金" in str(fund.get('fund_name')) else ("AG0" if "白银" in str(fund.get('fund_name')) else ""))
                         }
                         try:
-                            basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=? AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=?)", conn, params=(code, code))
+                            basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", conn, params=(code, code))
                             if not basket_df.empty:
                                 fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
                         except:
@@ -814,7 +814,7 @@ class FundService:
                 # [V6.1] 备用兜底：如果实时计算失败（例如未连行情源，或美股休市无最新价），从采样表获取最近一次的记录
                 if not metrics.get('rt_val') or metrics['rt_val'] <= 0:
                     try:
-                        sample_query = "SELECT rt_val, premium FROM fund_intraday_quotes WHERE fund_code=? ORDER BY date DESC, time DESC LIMIT 1"
+                        sample_query = "SELECT rt_val, premium FROM fund_intraday_quotes WHERE fund_code=%s ORDER BY date DESC, time DESC LIMIT 1"
                         sample_df = pd.read_sql(sample_query, conn, params=(code,))
                         if not sample_df.empty and sample_df.iloc[0]['rt_val'] > 0:
                             metrics['rt_val'] = sample_df.iloc[0]['rt_val']
@@ -884,7 +884,7 @@ class FundService:
             _dashboard_cache.set(cache_key, [])
             return []
         finally:
-            conn.close()
+            pass  # PostgreSQL: 不关闭全局连接
 
     def get_fund_history(self, fund_code: str) -> List[Dict[str, Any]]:
         """
@@ -908,7 +908,7 @@ class FundService:
             FROM unified_fund_history h
             LEFT JOIN exchange_rate r ON h.date = r.date
             LEFT JOIN fund_daily_factors f ON h.date = f.date AND h.fund_code = f.fund_code
-            WHERE h.fund_code = ? ORDER BY h.date DESC LIMIT 60
+            WHERE h.fund_code = %s ORDER BY h.date DESC LIMIT 60
             """
             df = pd.read_sql(query_hist, conn, params=(fund_code,))
             if df.empty: return []
@@ -916,7 +916,7 @@ class FundService:
             # 判断是否是港币基金。若是，在返回的 usd_cny_mid 字段里使用港币汇率 hkd_cny_mid
             is_hkd_fund = False
             try:
-                fund_info_df = pd.read_sql("SELECT category, idx_name FROM fund_info WHERE fund_code=? LIMIT 1", conn, params=(fund_code,))
+                fund_info_df = pd.read_sql("SELECT category, idx_name FROM fund_info WHERE fund_code=%s LIMIT 1", conn, params=(fund_code,))
                 if not fund_info_df.empty:
                     cat = str(fund_info_df.iloc[0]['category'] or '')
                     idx_name = str(fund_info_df.iloc[0]['idx_name'] or '')
@@ -1239,7 +1239,7 @@ class FundService:
 
             return data_list
         finally:
-            conn.close()
+            pass  # PostgreSQL: 不关闭全局连接
 
     def get_market_overview(self, market_data_service=None) -> Dict[str, Any]:
         conn = self.db._get_conn()
@@ -1272,23 +1272,23 @@ class FundService:
             count_df = pd.read_sql_query("SELECT count(*) as count FROM unified_fund_list", conn)
             res["stats"]["fund_count"] = int(count_df.iloc[0]['count']) if not count_df.empty else 0
         except: pass
-        finally: conn.close()
+        finally: pass  # PostgreSQL: 不关闭全局连接
         return res
 
     def get_fund_intraday(self, fund_code: str, date: str = None) -> List[Dict[str, Any]]:
         if not date: date = pd.Timestamp.now().strftime('%Y-%m-%d')
         conn = self.db._get_conn()
         try:
-            query = "SELECT time, price, rt_val, premium FROM fund_intraday_quotes WHERE fund_code = ? AND date = ? ORDER BY time ASC"
+            query = "SELECT time, price, rt_val, premium FROM fund_intraday_quotes WHERE fund_code = %s AND date = %s ORDER BY time ASC"
             return pd.read_sql(query, conn, params=(fund_code, date)).to_dict(orient='records')
-        finally: conn.close()
+        finally: pass  # PostgreSQL: 不关闭全局连接
 
     def get_fund_basket(self, fund_code: str) -> List[Dict[str, Any]]:
         conn = self.db._get_conn()
         try:
-            query = "SELECT underlying_symbol, weight, date FROM fund_basket_weights WHERE fund_code = ? AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code = ?)"
+            query = "SELECT underlying_symbol, weight, date FROM fund_basket_weights WHERE fund_code = %s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code = %s)"
             return pd.read_sql_query(query, conn, params=(fund_code, fund_code)).to_dict(orient='records')
-        finally: conn.close()
+        finally: pass  # PostgreSQL: 不关闭全局连接
     
     def get_valuation_meta(self, code: str) -> dict:
         """
@@ -1300,7 +1300,7 @@ class FundService:
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT fund_name, related_index, pos_ratio FROM unified_fund_list WHERE fund_code=?",
+                "SELECT fund_name, related_index, pos_ratio FROM unified_fund_list WHERE fund_code=%s",
                 (code,)
             )
             f_row = cursor.fetchone()
@@ -1324,7 +1324,7 @@ class FundService:
 
             basket_df = pd.read_sql(
                 "SELECT underlying_symbol as symbol, weight FROM fund_basket_weights "
-                "WHERE fund_code=? AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=?)",
+                "WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)",
                 conn, params=(code, code)
             )
             if not basket_df.empty:
@@ -1429,7 +1429,7 @@ class FundService:
                     FROM unified_fund_history h
                     LEFT JOIN exchange_rate r ON h.date = r.date
                     LEFT JOIN fund_daily_factors f ON h.date = f.date AND h.fund_code = f.fund_code
-                    WHERE h.fund_code = ?
+                    WHERE h.fund_code = %s
                     ORDER BY h.date DESC LIMIT 1
                 """, (code,))
                 row = cursor.fetchone()
@@ -1457,7 +1457,7 @@ class FundService:
 
                         cursor.execute("""
                             SELECT calibration FROM futures_daily
-                            WHERE symbol = ? AND calibration IS NOT NULL
+                            WHERE symbol = %s AND calibration IS NOT NULL
                             ORDER BY date DESC LIMIT 1
                         """, (base_fsym,))
                         crow = cursor.fetchone()
@@ -1476,7 +1476,7 @@ class FundService:
                         cursor.execute("""
                             SELECT COALESCE(NULLIF(netvalue, 0), price) as price
                             FROM usa_etf_daily_prices
-                            WHERE symbol IN (?, ?) AND date = ?
+                            WHERE symbol IN (%s, %s) AND date = %s
                         """, (symbol, alt_symbol, row[0]))
                         p_row = cursor.fetchone()
                         p_val = float(p_row[0]) if p_row and p_row[0] is not None else 0.0
@@ -1570,7 +1570,7 @@ class FundService:
             logger.error(traceback.format_exc())
             return {"status": "error", "message": str(e)}
         finally:
-            conn.close()
+            pass  # PostgreSQL: 不关闭全局连接
 
     def get_my_watchlist(self) -> List[str]:
         """
@@ -1582,20 +1582,23 @@ class FundService:
         """
         conn = self.db._get_conn()
         try:
-            # 查询自选基金表
-            cursor = conn.execute("SELECT fund_code FROM fund_watchlist ORDER BY fund_code")
-            watchlist = [row[0] for row in cursor.fetchall()]
+            # 查询自选基金表 (PostgreSQL: cursor.execute)
+            cur = conn.cursor()
+            cur.execute("SELECT fund_code FROM fund_watchlist ORDER BY fund_code")
+            watchlist = [row[0] for row in cur.fetchall()]
             
             # 如果自选表为空，返回所有基金（兼容旧版本，全部采样）
             # [V10.3] 降级为 DEBUG：fund_watchlist 表空是正常状态（用户自选在 localStorage），
             #          不应每3秒打 INFO 日志刷屏
             if not watchlist:
                 logger.debug("[Snapshot] fund_watchlist 表为空，采样服务兼容模式：处理所有基金")
-                all_funds_cursor = conn.execute("SELECT fund_code FROM unified_fund_list ORDER BY fund_code")
-                watchlist = [row[0] for row in all_funds_cursor.fetchall()]
+                cur2 = conn.cursor()
+                cur2.execute("SELECT fund_code FROM unified_fund_list ORDER BY fund_code")
+                watchlist = [row[0] for row in cur2.fetchall()]
                 return watchlist
             
             logger.debug(f"[Snapshot] 采样服务使用数据库自选列表: {len(watchlist)} 只基金")
             return watchlist
         finally:
-            conn.close()
+            # PostgreSQL: 不关闭全局连接
+            pass

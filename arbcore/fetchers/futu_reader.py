@@ -10,16 +10,27 @@ import time
 import threading
 import pandas as pd
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 # 尝试导入富途API
+# 先创建富途日志目录，避免导入时因目录不存在报错
+_futu_log_dir = os.path.expanduser(r'~\AppData\Roaming\com.futunn.FutuOpenD\Log')
+try:
+    os.makedirs(_futu_log_dir, exist_ok=True)
+except Exception:
+    pass
+
 try:
     from futu import OpenQuoteContext, SubType, Session
     FUTU_AVAILABLE = True
 except ImportError:
     FUTU_AVAILABLE = False
     logger.warning("[WARNING] 未安装 futu-api 库，富途读取器不可用 (pip install futu-api)")
+except Exception as e:
+    FUTU_AVAILABLE = False
+    logger.warning(f"[WARNING] 富途API初始化失败: {e}")
 
 
 class FutuReader:

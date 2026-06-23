@@ -36,7 +36,7 @@ class StaticValuationCalculator:
                 FROM fund_data a
                 LEFT JOIN fund_daily_factors b ON a.date = b.date AND a.fund_code = b.fund_code
                 LEFT JOIN exchange_rate c ON a.date = c.date
-                WHERE a.fund_code = ?
+                WHERE a.fund_code = %s
                 ORDER BY a.date DESC LIMIT 40
             """
             df = pd.read_sql(query, conn, params=(code,))
@@ -55,11 +55,11 @@ class StaticValuationCalculator:
                 if any(suffix in sym for suffix in ['-JP', '-EU', '-HK']):
                     sym = f"^{sym}"
                 
-                etf_df = pd.read_sql(f'SELECT date, COALESCE(NULLIF(netvalue, 0), price) as "{sym}" FROM usa_etf_daily_prices WHERE symbol = ?', conn, params=(sym,))
+                etf_df = pd.read_sql(f'SELECT date, COALESCE(NULLIF(netvalue, 0), price) as "{sym}" FROM usa_etf_daily_prices WHERE symbol = %s', conn, params=(sym,))
                 df = pd.merge(df, etf_df, on='date', how='left')
                 
                 # 获取权重
-                weight_df = pd.read_sql('SELECT date, weight FROM fund_basket_weights WHERE fund_code = ? AND underlying_symbol = ?', conn, params=(code, sym))
+                weight_df = pd.read_sql('SELECT date, weight FROM fund_basket_weights WHERE fund_code = %s AND underlying_symbol = %s', conn, params=(code, sym))
                 weight_df.rename(columns={'weight': f'{sym}_weight'}, inplace=True)
                 df = pd.merge(df, weight_df, on='date', how='left')
 
@@ -73,8 +73,6 @@ class StaticValuationCalculator:
         except Exception as e:
             logger.error(f"  ❌ [{name}] 计算异常: {e}")
             return False
-        finally:
-            conn.close()
 
     def _identify_primary_symbol(self, fund_config: Dict) -> Optional[str]:
         """识别主对冲锚点"""
@@ -164,16 +162,16 @@ class StaticValuationCalculator:
                 if pd.notna(row['static_val']):
                     # 更新 fund_data
                     cursor.execute(
-                        "UPDATE fund_data SET static_val = ?, val_error = ? WHERE date = ? AND fund_code = ?",
+                        "UPDATE fund_data SET static_val = %s, val_error = %s WHERE date = %s AND fund_code = %s",
                         (row['static_val'], row['val_error'], row['date'], fund_code)
                     )
                     # 同时更新/插入 unified_fund_history (新工业标准)
                     cursor.execute("""
                         INSERT INTO unified_fund_history (date, fund_code, static_val, calibration)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                         ON CONFLICT(date, fund_code) DO UPDATE SET 
                             static_val = excluded.static_val
                     """, (row['date'], fund_code, row['static_val'], row.get('calibration')))
             conn.commit()
-        finally:
-            conn.close()
+        except Exception:
+            pass

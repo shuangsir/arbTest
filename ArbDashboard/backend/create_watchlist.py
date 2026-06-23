@@ -7,7 +7,7 @@
 import sqlite3
 import os
 
-DB_PATH = r"D:\Study\arbTest\database\arb_master.db"
+DB_PATH = r"D:\arbTest\database\arb_master.db"
 
 def create_watchlist_table():
     """创建自选基金表"""

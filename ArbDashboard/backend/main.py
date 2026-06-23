@@ -1569,9 +1569,12 @@ async def reconnect_tdx():
         if market_data_service.realtime_manager:
             rm = market_data_service.realtime_manager
             tdx = rm.active_fetchers.get('tdx')
+            logger.info(f"[RECONNECT TDX] tdx from active_fetchers: {tdx}")
             if tdx:
                 # 已在 active_fetchers 中，直接 reconnect
+                logger.info(f"[RECONNECT TDX] Using cached tdx, is_connected={tdx.is_connected}")
                 success, msg = tdx.reconnect()
+                logger.info(f"[RECONNECT TDX] Cached tdx reconnect result: success={success}, msg={msg}")
                 if success:
                     system_status.add_milestone("SUCCESS", msg)
                     return {"status": "ok", "message": msg}
@@ -1580,9 +1583,12 @@ async def reconnect_tdx():
                     return {"status": "error", "message": msg}
             else:
                 # V10.0 启动时跳过了客户端源，需要新创建实例并注册
+                logger.info("[RECONNECT TDX] No cached tdx, creating new instance")
                 from arbcore.fetchers.realtime.tdx import TdxRealtimeFetcher
                 tdx = TdxRealtimeFetcher()
+                logger.info(f"[RECONNECT TDX] New tdx created, calling reconnect()")
                 success, msg = tdx.reconnect()
+                logger.info(f"[RECONNECT TDX] New tdx reconnect result: success={success}, msg={msg}")
                 if success:
                     rm.active_fetchers['tdx'] = tdx
                     if rm.symbols:
@@ -1596,6 +1602,7 @@ async def reconnect_tdx():
             system_status.add_milestone("WARNING", "实时行情管理器未启动")
             return {"status": "error", "message": "实时行情管理器未启动"}
     except Exception as e:
+        logger.exception(f"[RECONNECT TDX] Exception: {e}")
         system_status.add_milestone("ERROR", f"通达信重连异常: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -1608,18 +1615,26 @@ async def reconnect_galaxy():
             galaxy = rm.active_fetchers.get('galaxy')
             if galaxy:
                 success, msg = galaxy.reconnect()
+                if success:
+                    system_status.add_milestone("SUCCESS", f"银河QMT {msg}")
+                    return {"status": "ok", "message": msg}
+                else:
+                    system_status.add_milestone("WARNING", f"银河QMT {msg}")
+                    return {"status": "error", "message": msg}
             else:
-                # 懒创建：首次点击时创建实例并注册到管理器
+                # V10.0 启动时跳过了客户端源，需要新创建实例并注册
                 from arbcore.fetchers.realtime.galaxy import GalaxyQmtFetcher
                 galaxy = GalaxyQmtFetcher()
-                rm.active_fetchers['galaxy'] = galaxy
                 success, msg = galaxy.reconnect()
-            if success:
-                system_status.add_milestone("SUCCESS", msg)
-                return {"status": "ok", "message": msg}
-            else:
-                system_status.add_milestone("WARNING", msg)
-                return {"status": "error", "message": msg}
+                if success:
+                    rm.active_fetchers['galaxy'] = galaxy
+                    if rm.symbols:
+                        galaxy.subscribe(rm.symbols)
+                    system_status.add_milestone("SUCCESS", f"银河QMT {msg}")
+                    return {"status": "ok", "message": msg}
+                else:
+                    system_status.add_milestone("WARNING", f"银河QMT {msg}")
+                    return {"status": "error", "message": msg}
         else:
             system_status.add_milestone("WARNING", "实时行情管理器未启动")
             return {"status": "error", "message": "实时行情管理器未启动"}
@@ -1636,18 +1651,26 @@ async def reconnect_guojin():
             guojin = rm.active_fetchers.get('guojin')
             if guojin:
                 success, msg = guojin.reconnect()
+                if success:
+                    system_status.add_milestone("SUCCESS", f"国金QMT {msg}")
+                    return {"status": "ok", "message": msg}
+                else:
+                    system_status.add_milestone("WARNING", f"国金QMT {msg}")
+                    return {"status": "error", "message": msg}
             else:
-                # 懒创建：首次点击时创建实例并注册到管理器
+                # V10.0 启动时跳过了客户端源，需要新创建实例并注册
                 from arbcore.fetchers.realtime.guojin import GuojinQmtFetcher
                 guojin = GuojinQmtFetcher()
-                rm.active_fetchers['guojin'] = guojin
                 success, msg = guojin.reconnect()
-            if success:
-                system_status.add_milestone("SUCCESS", msg)
-                return {"status": "ok", "message": msg}
-            else:
-                system_status.add_milestone("WARNING", msg)
-                return {"status": "error", "message": msg}
+                if success:
+                    rm.active_fetchers['guojin'] = guojin
+                    if rm.symbols:
+                        guojin.subscribe(rm.symbols)
+                    system_status.add_milestone("SUCCESS", f"国金QMT {msg}")
+                    return {"status": "ok", "message": msg}
+                else:
+                    system_status.add_milestone("WARNING", f"国金QMT {msg}")
+                    return {"status": "error", "message": msg}
         else:
             system_status.add_milestone("WARNING", "实时行情管理器未启动")
             return {"status": "error", "message": "实时行情管理器未启动"}

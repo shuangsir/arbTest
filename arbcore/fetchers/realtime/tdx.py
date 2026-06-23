@@ -273,18 +273,25 @@ class TdxRealtimeFetcher(BaseRealtimeFetcher):
 
             self.is_connected = True
 
-
-
+            # 验证真实连接：尝试获取一个测试行情
+            try:
+                test_code = self.normalize_symbol("600000")
+                with _suppress_console_output():
+                    snap = self.tq.get_market_snapshot(stock_code=test_code)
+                if not snap or not snap.get('Now'):
+                    logger.warning("[TDX] 连接初始化成功但无法获取行情数据，通达信客户端可能未运行")
+                    self.is_connected = False
+                    self.disabled = True
+                    return False
+            except Exception as e:
+                logger.warning(f"[TDX] 连接验证异常: {e}")
+                self.is_connected = False
+                self.disabled = True
+                return False
 
             logger.info("通达信 (tqcenter) 适配器加载成功")
 
-
-
-
             return True
-
-
-
 
         except ImportError:
 
@@ -353,6 +360,7 @@ class TdxRealtimeFetcher(BaseRealtimeFetcher):
         self.is_connected = False
         self.last_connect_time = 0
         for attempt in range(1, self.max_retries + 1):
+            logger.info(f"[TDX] 重连尝试 {attempt}/{self.max_retries}...")
             try:
                 if self.connect():
                     logger.info(f"[TDX] 手动重连成功 (第 {attempt} 次)")
@@ -360,7 +368,7 @@ class TdxRealtimeFetcher(BaseRealtimeFetcher):
                     return True, f"通达信连接成功 (第 {attempt} 次尝试)"
             except Exception as e:
                 logger.warning(f"[TDX] 重连失败 (第 {attempt}/{self.max_retries} 次): {e}")
-                time.sleep(1)
+            time.sleep(1)
         self.disabled = True
         logger.warning("[TDX] 手动重连失败（已尝试 {} 次），请确认通达信客户端及 tqcenter 插件已启动".format(self.max_retries))
         return False, f"通达信重连失败（已尝试 {self.max_retries} 次），请确认通达信客户端已启动"

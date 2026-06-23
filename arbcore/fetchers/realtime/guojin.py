@@ -1,6 +1,8 @@
 import logging
 import time
 import threading
+import os
+import sys
 from typing import List, Dict, Optional, Any
 from .base import BaseRealtimeFetcher
 
@@ -23,14 +25,41 @@ class GuojinQmtFetcher(BaseRealtimeFetcher):
         self.last_connect_time = 0
         # [V10.0] 不再启动后台连接线程，用户手动触发 reconnect() 即可
 
+    def _setup_qmt_path(self):
+        """设置国金QMT路径，确保导入正确的xtquant模块"""
+        QMT_INSTALL_PATH = r"D:\GJQMT"
+        
+        if os.path.exists(QMT_INSTALL_PATH):
+            paths_to_add = [
+                QMT_INSTALL_PATH,
+                os.path.join(QMT_INSTALL_PATH, "lib"),
+                os.path.join(QMT_INSTALL_PATH, "bin.x64"),
+                os.path.join(QMT_INSTALL_PATH, "bin.x64", "Lib", "site-packages"),
+            ]
+            for p in paths_to_add:
+                if p not in sys.path:
+                    sys.path.append(p)
+            return QMT_INSTALL_PATH
+        return None
+
     def connect(self) -> bool:
         if self.disabled:
             logger.debug("[QMT国金] 已禁用，跳过连接")
             return False
         try:
-            from xtquant import xtdata
+            try:
+                from xtquant import xtdata
+                logger.info("[QMT国金] 使用 pip 安装的 xtquant 版本")
+            except ImportError:
+                qmt_path = self._setup_qmt_path()
+                if not qmt_path:
+                    logger.error("❌ 国金QMT安装路径不存在")
+                    return False
+                from xtquant import xtdata
+                logger.info("[QMT国金] 使用 QMT 安装目录中的 xtquant 版本")
+            
             self.xtdata = xtdata
-            # 尝试获取一个行情来验证连接是否真的可用
+            
             try:
                 test_tick = self.xtdata.get_full_tick(['000001.SZ'])
                 if test_tick and '000001.SZ' in test_tick and test_tick['000001.SZ']:
@@ -45,8 +74,8 @@ class GuojinQmtFetcher(BaseRealtimeFetcher):
                 logger.warning(f"⚠️ 国金QMT xtdata 连接验证失败（QMT终端可能未启动）: {probe_e}")
                 self.is_connected = False
                 return False
-        except ImportError:
-            logger.error("❌ 未安装 xtquant 库，请运行 'pip install xtquant'")
+        except ImportError as e:
+            logger.error(f"❌ 无法导入 xtquant: {e}")
             return False
         except Exception as e:
             logger.error(f"❌ 国金QMT 连接异常: {e}")

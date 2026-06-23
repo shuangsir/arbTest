@@ -53,7 +53,19 @@ class IBReader(EWrapper, EClient):
         self.client_id = client_id if client_id is not None else random.randint(1000, 9999)
         self.on_price_update = on_price_update  # 注入回调函数解耦 SocketIO
         self.db_manager = db_manager # 注入数据库管理器
-        self.target_ports = [4001, 4002, 7496, 7497] 
+        
+        # 从配置文件读取端口配置，优先使用 4001，7496 备用
+        try:
+            from arbcore.config.account_private import IB_HOST, IB_PORT, IB_CLIENT_ID
+            self.ib_host = IB_HOST
+            # 主端口优先，备用端口为 7496
+            self.target_ports = [IB_PORT, 7496] if IB_PORT != 7496 else [7496]
+            if client_id is None:
+                self.client_id = IB_CLIENT_ID
+        except ImportError:
+            self.ib_host = "127.0.0.1"
+            self.target_ports = [4001, 7496]
+        
         self.current_port_index = 0
         self.connected = False
         self.retry_delay = 1.0 
@@ -113,9 +125,9 @@ class IBReader(EWrapper, EClient):
             logger.debug("[IB] 已禁用，跳过连接")
             return False
         target_port = self.target_ports[self.current_port_index]
-        print(f"[IBReader] 尝试连接 IB Gateway/TWS (端口: {target_port}, ClientId: {self.client_id})...")
+        print(f"[IBReader] 尝试连接 IB Gateway/TWS ({self.ib_host}:{target_port}, ClientId: {self.client_id})...")
         try:
-            self.connect("127.0.0.1", target_port, clientId=self.client_id)
+            self.connect(self.ib_host, target_port, clientId=self.client_id)
             api_thread = threading.Thread(target=self.run, daemon=True)
             api_thread.start()
             time.sleep(2)

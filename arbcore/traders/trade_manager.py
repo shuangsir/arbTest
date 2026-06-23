@@ -15,14 +15,28 @@ logger = logging.getLogger(__name__)
 
 # 优先尝试从 arbcore.config 导入
 try:
-    from arbcore.config.account_private import GJS_ACCOUNT
+    from arbcore.config.account_private import (
+        GJS_ACCOUNT, 
+        YINHE_QMT_PATH,
+        YINHE_STOCK_ACCOUNT,
+        YINHE_FUTURE_ACCOUNT,
+        YINHE_PASSWORD
+    )
 except ImportError:
     try:
         # 兼容旧路径
         from account_private import GJS_ACCOUNT
+        YINHE_QMT_PATH = None
+        YINHE_STOCK_ACCOUNT = None
+        YINHE_FUTURE_ACCOUNT = None
+        YINHE_PASSWORD = None
     except ImportError:
-        print("WARNING: account_private.py 不存在，请复制 account_example.py 并填入真实账号")
+        print("WARNING: account_private.py 不存在，请复制并填入真实账号")
         GJS_ACCOUNT = None
+        YINHE_QMT_PATH = None
+        YINHE_STOCK_ACCOUNT = None
+        YINHE_FUTURE_ACCOUNT = None
+        YINHE_PASSWORD = None
 
 class TradeManager:
     """A股/LOF统一交易接口管理器"""
@@ -79,32 +93,44 @@ class TradeManager:
 
     def _init_guojin_qmt(self):
         try:
-            # ====================== 国金 QMT 路径与环境配置 ======================
-            QMT_INSTALL_PATH = r"D:\GJQMT"
-            if os.path.exists(QMT_INSTALL_PATH):
-                if QMT_INSTALL_PATH not in sys.path:
-                    sys.path.append(QMT_INSTALL_PATH)
-                    sys.path.append(os.path.join(QMT_INSTALL_PATH, "lib"))
-                    sys.path.append(os.path.join(QMT_INSTALL_PATH, "bin.x64"))
-                    sys.path.append(os.path.join(QMT_INSTALL_PATH, "bin.x64", "Lib", "site-packages"))
-                
+            try:
                 from xtquant import xttrader, xtconstant
                 from xtquant.xttype import StockAccount
-                
-                qmt_path = os.path.join(QMT_INSTALL_PATH, 'userdata_mini')
-                session_id = int(time.time())
-                self.xt_trader = xttrader.XtQuantTrader(qmt_path, session_id)
-                self.xt_account = StockAccount(GJS_ACCOUNT)
-                self.xtconstant = xtconstant
-                
-                self.xt_trader.start()
-                connect_result = self.xt_trader.connect()
-                if connect_result == 0:
-                    self.xt_trader.subscribe(self.xt_account)
-                    self.xtquant_available = True
-                    logger.info(f"[TradeManager] 已挂载【国金MiniQMT】原生直连通道 (账号:{self.xt_account.account_id})")
+                logger.info("[TradeManager] 使用 pip 安装的 xtquant 版本")
+            except ImportError:
+                QMT_INSTALL_PATH = r"D:\GJQMT"
+                if os.path.exists(QMT_INSTALL_PATH):
+                    paths_to_add = [
+                        QMT_INSTALL_PATH,
+                        os.path.join(QMT_INSTALL_PATH, "lib"),
+                        os.path.join(QMT_INSTALL_PATH, "bin.x64"),
+                        os.path.join(QMT_INSTALL_PATH, "bin.x64", "Lib", "site-packages"),
+                    ]
+                    for p in paths_to_add:
+                        if p not in sys.path:
+                            sys.path.insert(0, p)
+                    
+                    from xtquant import xttrader, xtconstant
+                    from xtquant.xttype import StockAccount
+                    logger.info("[TradeManager] 使用 QMT 安装目录中的 xtquant 版本")
                 else:
-                    logger.warning(f"[TradeManager] 国金QMT客户端连接失败 (错误码: {connect_result})")
+                    logger.warning("[TradeManager] 国金QMT安装路径不存在")
+                    return
+            
+            qmt_path = os.path.join(r"D:\GJQMT", 'userdata_mini')
+            session_id = int(time.time())
+            self.xt_trader = xttrader.XtQuantTrader(qmt_path, session_id)
+            self.xt_account = StockAccount(GJS_ACCOUNT)
+            self.xtconstant = xtconstant
+            
+            self.xt_trader.start()
+            connect_result = self.xt_trader.connect()
+            if connect_result == 0:
+                self.xt_trader.subscribe(self.xt_account)
+                self.xtquant_available = True
+                logger.info(f"[TradeManager] 已挂载【国金MiniQMT】原生直连通道 (账号:{self.xt_account.account_id})")
+            else:
+                logger.warning(f"[TradeManager] 国金QMT客户端连接失败 (错误码: {connect_result})")
         except Exception as e:
             logger.info(f"[TradeManager] 国金QMT模块跳过加载: {e}")
 

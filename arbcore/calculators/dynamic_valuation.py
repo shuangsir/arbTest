@@ -44,7 +44,7 @@ class DynamicValuationCalculator:
                 FROM unified_fund_history a
                 LEFT JOIN fund_daily_factors b ON a.date = b.date AND a.fund_code = b.fund_code
                 LEFT JOIN exchange_rate c ON a.date = c.date
-                WHERE a.fund_code = ? AND COALESCE(a.nav, b.nav) IS NOT NULL AND COALESCE(a.nav, b.nav) > 0
+                WHERE a.fund_code = %s AND COALESCE(a.nav, b.nav) IS NOT NULL AND COALESCE(a.nav, b.nav) > 0
                 ORDER BY a.date DESC LIMIT 1
             """
             df = pd.read_sql(query, conn, params=(fund_code,))
@@ -56,7 +56,7 @@ class DynamicValuationCalculator:
             # 补充底层 ETF 基准价格（精确日期优先，取不到则往前找最近一日）
             etf_df = pd.read_sql(
                 "SELECT symbol, COALESCE(NULLIF(netvalue, 0), price) as price, date "
-                "FROM usa_etf_daily_prices WHERE date = ?", 
+                "FROM usa_etf_daily_prices WHERE date = %s", 
                 conn, params=(base_date,)
             )
             if not etf_df.empty:
@@ -76,11 +76,11 @@ class DynamicValuationCalculator:
                     '^INDA-EU,^INDA-JP,^INDA-HK'
                 ).split(',') if s and s not in base_row]
                 if known_etfs:
-                    placeholders = ','.join('?' for _ in known_etfs)
+                    placeholders = ','.join('%s' for _ in known_etfs)
                     fallback_df = pd.read_sql(
                         f"SELECT symbol, COALESCE(NULLIF(netvalue, 0), price) as price, MAX(date) as md "
                         f"FROM usa_etf_daily_prices "
-                        f"WHERE symbol IN ({placeholders}) AND price > 0 AND date <= ? "
+                        f"WHERE symbol IN ({placeholders}) AND price > 0 AND date <= %s "
                         f"GROUP BY symbol",
                         conn, params=(*known_etfs, base_date)
                     )
@@ -101,8 +101,6 @@ class DynamicValuationCalculator:
         except Exception as e:
             logger.error(f"获取 {fund_code} 基准数据失败: {e}")
             return None
-        finally:
-            conn.close()
 
     def calculate(self, fund_config: Dict, current_fx: float, current_etfs: Dict[str, float]) -> Optional[Dict[str, Any]]:
         """
