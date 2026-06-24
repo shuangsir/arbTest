@@ -265,10 +265,29 @@ class DailyUpdater(BaseApp):
             conn = self.db._get_conn()
             engine = self.db.get_sqlalchemy_engine()
             yaml_updated = False
+            today_str = datetime.now().strftime('%Y-%m-%d')
             
             for fund in self.config.get('funds', []):
                 code = str(fund.get('code', ''))
                 if not code: continue
+                
+                # 0. [新增] 如果数据库中没有权重数据，从 YAML 导入
+                weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
+                if weight_df.empty:
+                    for port_key in ['valuation_portfolio', 'hedging_portfolio']:
+                        portfolio = fund.get(port_key, [])
+                        if portfolio:
+                            for item in portfolio:
+                                sym = item.get('symbol', '').replace('^', '')
+                                weight = float(item.get('weight', 0))
+                                if sym and weight > 0:
+                                    try:
+                                        self.db.funds.upsert_fund_basket_weight(today_str, code, sym, weight)
+                                        self.logger.info(f"🔄 [{code}] 从YAML导入权重: {sym} = {weight}%")
+                                    except Exception as e:
+                                        self.logger.warning(f"⚠️ [{code}] 导入权重失败 {sym}: {e}")
+                    # 重新查询已导入的数据
+                    weight_df = pd.read_sql("SELECT underlying_symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date=(SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
                 
                 # 1. 查询最新仓位
                 pos_df = pd.read_sql("SELECT position FROM fund_daily_factors WHERE fund_code=%s ORDER BY date DESC LIMIT 1", engine, params=(code,))

@@ -332,7 +332,9 @@ def get_symbol_source(symbol: str, use_ib: bool = True) -> str:
         >>> get_symbol_source('^GLD-JP')         # GLD 实时价格
         'IB'
     """
-    symbol = symbol.upper().strip()
+    if symbol is None:
+        return 'SINA'
+    symbol = str(symbol).upper().strip()
     
     # 移除地区后缀：-EU, -JP, -HK 等（如 ^USO-EU → ^USO, ^INDA-EU → ^INDA）
     # 注意：先去掉 ^ 前缀再处理后缀

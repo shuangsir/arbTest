@@ -181,11 +181,9 @@ class FutuReader:
         if not FUTU_AVAILABLE:
             return False, "未安装 futu-api 库", self.prices
             
-        if self.disabled:
-            return False, "富途API已被禁用（启动时连接失败，请点击页面'富途'标签重试）", self.prices
-            
         try:
             # ctx 为 None 说明还没连接或已断开，尝试连接
+            # disabled=True 时也尝试连接，避免 OpenD 已运行但程序未感知的情况
             if self.ctx is None:
                 # 限制连接频率，避免频繁重连
                 if time.time() - self.last_connect_time < 30:
@@ -197,14 +195,6 @@ class FutuReader:
                 for attempt in range(1, self.max_retries + 1):
                     try:
                         self.ctx = FutuReader._connect_with_timeout(self.host, self.port, timeout=5)
-                        for _wait in range(50):
-                            if self.ctx._ctx._quote_conn:
-                                break
-                            time.sleep(0.1)
-                        if not self.ctx._ctx._quote_conn:
-                            self.ctx.close()
-                            self.ctx = None
-                            raise Exception("连接超时")
                         self.subscribed_codes = set()
                         connected = True
                         logger.info(f"[富途] 连接成功 (第 {attempt} 次)")

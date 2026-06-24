@@ -314,18 +314,21 @@
           "code": "501302",
           "name": "恒生指数基金",
           "category": "QDII 亚洲",
+          "trade_etf": "HSI",
           "position": 95.0
         },
         {
           "code": "160924",
           "name": "恒生指数LOF",
           "category": "QDII 亚洲",
+          "trade_etf": "HSI",
           "position": 95.0
         },
         {
           "code": "164705",
           "name": "恒生LOF",
           "category": "QDII 亚洲",
+          "trade_etf": "HSI",
           "position": 95.0
         },
         {
@@ -338,6 +341,7 @@
           "code": "161831",
           "name": "恒生国企LOF",
           "category": "QDII 亚洲",
+          "trade_etf": "HSCEI",
           "position": 95.0
         },
         {
@@ -356,6 +360,7 @@
           "code": "160717",
           "name": "H股LOF",
           "category": "QDII 亚洲",
+          "trade_etf": "HSCEI",
           "position": 95.0
         },
         {

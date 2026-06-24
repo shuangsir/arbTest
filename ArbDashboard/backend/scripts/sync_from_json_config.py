@@ -6,17 +6,15 @@ import json
 import os
 import sys
 
-# 添加路径
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(backend_dir)
+# 添加项目根目录到路径（确保 arbcore.config.account_private 可以被找到）
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+sys.path.insert(0, project_root)
 
 # arbcore 路径
-arbcore_config_dir = os.path.abspath(os.path.join(backend_dir, '..', '..', 'arbcore', 'config'))
-if not os.path.exists(arbcore_config_dir):
-    arbcore_config_dir = os.path.join(os.path.dirname(__file__), '..', 'core', 'arbcore', 'config')
+arbcore_config_dir = os.path.join(project_root, 'arbcore', 'config')
 
 # 数据库路径
-root_db_path = os.path.abspath(os.path.join(backend_dir, '..', '..', 'database', 'arb_master.db'))
+root_db_path = os.path.join(project_root, 'database', 'arb_master.db')
 
 def sync_json_to_db():
     """从 JSON 配置同步到数据库"""
@@ -42,14 +40,13 @@ def sync_json_to_db():
                 'code': str(fund.get('code')),
                 'name': fund.get('name'),
                 'related_index': fund.get('trade_etf', '-'),
-                'target_type': fund.get('target_type', 'ETF')  # 默认ETF，指数基金标记为INDEX
+                'target_type': fund.get('target_type', 'ETF')
             })
     
     print(f"从 JSON 读取到 {len(fund_list)} 只基金")
     
     # 导入数据库管理器
-    sys.path.insert(0, os.path.join(backend_dir, '..', '..', 'arbcore'))
-    from database.db_manager import DatabaseManager
+    from arbcore.database.db_manager import DatabaseManager
     
     # 同步到数据库
     db = DatabaseManager(db_path=root_db_path)

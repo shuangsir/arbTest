@@ -1027,6 +1027,8 @@ class FundService:
                     if not metrics.get('rt_val') and code not in funds_with_basket:
                         rel_idx = fund.get('related_index')
                         nav_home = float(metrics.get('nav', 0))
+                        # [严格模式] 只有当 related_index 有效时才进行指数估值
+                        # QDII亚洲基金的 related_index 字段为 '-'（占位符），需要补充真实指数代码
                         if rel_idx and rel_idx != '-' and nav_home > 0:
                             idx_data = index_changes_map.get(rel_idx)
                             if idx_data is not None and isinstance(idx_data, dict):
@@ -1106,7 +1108,7 @@ class FundService:
                             # 放在 current_fx 条件外，让无basket基金也能走魔法公式
                             if not metrics.get('rt_val'):
                                 trade_etf = fund_cfg.get('trade_etf', '')
-                                if trade_etf and self.market_data_service:
+                                if trade_etf and not pd.isna(trade_etf) and self.market_data_service:
                                     # [V10.9] 跳过指数类符号（HSI/HSTECH等），指数走 get_index_change_percent 路径
                                     from arbcore.config.symbol_source_map import get_symbol_source
                                     if get_symbol_source(trade_etf) == 'SINA':
@@ -1123,8 +1125,24 @@ class FundService:
                                                     b_position = base_data.get('position', None)
                                                     if pd.isna(b_position) or b_position is None:
                                                         b_position = float(fund.get('pos_ratio') or 0.95)
-                                                    # current_fx 可能为空（_daily_snapshot 未加载），从 base_data 兜底
+                                                        
+                                                    # [FIX] 汇率兜底：优先用 current_fx，其次 base_data，最后查数据库最新汇率
                                                     fx = current_fx if (current_fx and current_fx > 0) else float(base_data.get('exchange_rate', 0) or 0)
+                                                    if fx <= 0:
+                                                        try:
+                                                            fx_df = pd.read_sql("SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine)
+                                                            if not fx_df.empty and fx_df.iloc[0]['usd_cny_mid'] > 0:
+                                                                fx = fx_df.iloc[0]['usd_cny_mid']
+                                                        except:
+                                                            pass
+                                                    
+                                                    # [FIX] hedge 兜底：当 hedge 缺失时，从 base_data 中的 ETF 基准价格估算
+                                                    # hedge = (基准 ETF 价格 * 汇率) / 净值
+                                                    if b_hedge <= 0 and b_nav > 0 and fx > 0:
+                                                        base_etf_price = base_data.get(trade_etf, base_data.get('^' + trade_etf, 0))
+                                                        if base_etf_price and base_etf_price > 0:
+                                                            b_hedge = (base_etf_price * fx) / b_nav
+                                                    
                                                     if b_nav > 0 and b_hedge > 0 and fx > 0:
                                                         # val = nav * (1 - pos) + (etf_price * fx) / hedge
                                                         val_res = b_nav * (1.0 - b_position) + (etf_price * fx) / b_hedge
@@ -1679,7 +1697,7 @@ class FundService:
             if base_data and (not base_data.get('hedge') or float(base_data.get('hedge', 0)) <= 0):
                 try:
                     trade_etf = fund_cfg.get('trade_etf', '')
-                    if trade_etf:
+                    if trade_etf and not pd.isna(trade_etf):
                         base_etf_price = base_data.get(trade_etf) or base_data.get(f"^{trade_etf}")
                         base_nav = base_data.get('nav')
                         base_pos = base_data.get('position')
@@ -1712,7 +1730,7 @@ class FundService:
             # [V10.8] basket为空时用 trade_etf 兜底获取行情（如162411→XOP）
             if not etf_symbols:
                 trade_etf = fund_cfg.get('trade_etf', '')
-                if trade_etf:
+                if trade_etf and not pd.isna(trade_etf):
                     # [V10.9] 跳过指数类符号（HSI/HSTECH/399300等），指数无可用的实时行情
                     from arbcore.config.symbol_source_map import get_symbol_source
                     if get_symbol_source(trade_etf) == 'SINA':
