@@ -28,13 +28,10 @@ except ImportError:
 class DailyUpdater(BaseApp):
     def __init__(self):
         scripts_dir = os.path.dirname(os.path.abspath(__file__))
-        super().__init__("daily_updater", app_dir=scripts_dir)
-        # [AI-2026-06-28] 修正配置文件路径：指向 arbcore/config/lof_config.yaml
+        # [AI-2026-06-29] 配置文件路径直接指向 arbcore/config/lof_config.yaml，避免 BaseApp 误报 WARNING
         correct_config = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "arbcore", "config", "lof_config.yaml")
-        if os.path.exists(correct_config):
-            self.config_path = correct_config
-            self.config = self._load_config()
-            self.logger.info(f"📄 配置文件重定向: {self.config_path}")
+        config_name = correct_config if os.path.exists(correct_config) else "lof_config.yaml"
+        super().__init__("daily_updater", app_dir=scripts_dir, config_name=config_name)
         self.woody_crawler = WoodyWebCrawler()
         self.hist_manager = HistoricalDataManager(db_manager=self.db)
         self._woody_logged_in = False  # 延迟登录标记
