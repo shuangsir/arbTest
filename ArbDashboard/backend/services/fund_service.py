@@ -6,10 +6,58 @@ import threading
 import functools
 from datetime import datetime
 import pandas as pd
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import logging
+import requests
+import yaml
 
 logger = logging.getLogger(__name__)
+
+# [V11.0] 加载 lof_config.yaml 获取基金配置（rate_type 等字段不在数据库中的）
+_CONFIG_YAML_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'arbcore', 'config', 'lof_config.yaml'))
+_FUNDS_WITH_SPOT_RATE: Set[str] = set()
+try:
+    with open(_CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
+        yaml_cfg = yaml.safe_load(f)
+        fund_list = yaml_cfg.get('funds', []) if isinstance(yaml_cfg, dict) else yaml_cfg or []
+        for item in fund_list:
+            if isinstance(item, dict) and item.get('rate_type') == 'spot':
+                _FUNDS_WITH_SPOT_RATE.add(item['code'])
+    logger.info(f"[FX] 在岸价基金({len(_FUNDS_WITH_SPOT_RATE)}只): {_FUNDS_WITH_SPOT_RATE}")
+except Exception as e:
+    logger.warning(f"[FX] 读取lof_config.yaml获取rate_type失败: {e}")
+
+# [V11.0] 实时在岸价缓存（15秒 TTL）
+_SPOT_FX_CACHE: Dict[str, float] = {'rate': 0.0, 'time': 0.0}
+
+def _get_realtime_spot_fx() -> float:
+    """从新浪获取 USD/CNY 实时在岸价（实盘汇率），15秒缓存"""
+    now = time.time()
+    if now - _SPOT_FX_CACHE['time'] < 15 and _SPOT_FX_CACHE['rate'] > 0:
+        return _SPOT_FX_CACHE['rate']
+    try:
+        resp = requests.get(
+            "http://hq.sinajs.cn/list=fx_susdcny",
+            headers={"Referer": "https://finance.sina.com.cn/"},
+            timeout=3.0,
+            proxies={"http": None, "https": None}
+        )
+        resp.encoding = 'gbk'
+        if resp.text and '="' in resp.text:
+            parts = resp.text.split('"')[1].split(',')
+            if len(parts) >= 2:
+                rate = float(parts[1])
+                if rate > 0:
+                    _SPOT_FX_CACHE['rate'] = rate
+                    _SPOT_FX_CACHE['time'] = now
+                    logger.debug(f"[FX] 新浪在岸价: {rate}")
+                    return rate
+    except Exception as e:
+        logger.warning(f"[FX] 获取新浪在岸价失败: {e}")
+    # 兜底：用缓存旧值
+    if _SPOT_FX_CACHE['rate'] > 0:
+        return _SPOT_FX_CACHE['rate']
+    return 0.0
 
 # [债券ETF] 引入债券ETF估值服务
 from services.bond_etf_valuation import get_bond_etf_valuation, BOND_ETF_META
@@ -49,11 +97,12 @@ _dashboard_cache = DashboardCache()
 # [V10.1] 日内不变数据 — 启动时加载一次，当天不再查库
 _daily_snapshot = {
     'usd_cny_mid': None,
+    'usd_cny_spot': None,
     'loaded': False,
 }
 
 def _ensure_daily_snapshot(db):
-    """中间价只加载一次（启动时），当天不变"""
+    """中间价+在岸价只加载一次（启动时），当天不变"""
     if _daily_snapshot['loaded']:
         return
     try:
@@ -63,9 +112,14 @@ def _ensure_daily_snapshot(db):
         )
         if not fx_df.empty and fx_df.iloc[0]['usd_cny_mid'] > 0:
             _daily_snapshot['usd_cny_mid'] = fx_df.iloc[0]['usd_cny_mid']
+        # 加载实时在岸价（用于 spot rate 基金）
+        _daily_snapshot['usd_cny_spot'] = _get_realtime_spot_fx()
+        if _daily_snapshot['usd_cny_spot'] <= 0:
+            logger.warning("[SNAPSHOT] 在岸价获取失败，将用中间价兜底（周末/非交易时段可能如此）")
         _daily_snapshot['loaded'] = True
-    except Exception:
-        pass
+        logger.info(f"[SNAPSHOT] usd_cny_mid={_daily_snapshot['usd_cny_mid']}, usd_cny_spot={_daily_snapshot['usd_cny_spot']}")
+    except Exception as e:
+        logger.warning(f"[SNAPSHOT] 加载汇率失败: {e}")
 
 # TAB → SQL category 值映射（与 unified_fund_list.category 保持一致）
 _TAB_CATEGORY_MAP = {
@@ -288,6 +342,9 @@ def _clean_index_symbol(sym: str) -> str:
     # 映射表
     if clean in _INDEX_CODE_MAP:
         return _INDEX_CODE_MAP[clean] or ''
+    # ^ 前缀（如 ^HSI）
+    if clean.startswith('^'):
+        clean = clean[1:]
     # .CSI 后缀
     if clean.endswith('.CSI'):
         clean = clean[:-4]
@@ -306,7 +363,13 @@ def _is_hk_index_symbol(clean_sym: str) -> bool:
     if not clean_sym:
         return False
     hk_prefixes = ('HSI', 'HSTECH', 'HSCEI', 'HSCI', 'HSCCI', 'HSSCNE',
-                   'HSSI', 'HSMI', 'HSSFML25', 'HSSCBBAI')
+                   'HSSI', 'HSMI', 'HSSFML25', 'HSSCBBAI',
+                   'HSHK', 'HSCIC', 'HSI50', 'HSML25', 'HSCC',
+                   'HSCE', 'HSH', 'HSI100', 'HSI200', 'HSI500',
+                   'HSCON', 'HSFIN', 'HSIND', 'HSENER', 'HSUTIL',
+                   'HSPROP', 'HSINFO', 'HSIT', 'HSMT', 'HSCONS',
+                   'HSMED', 'HSHEAL', 'HSRE', 'HSCOM', 'HSFIN25',
+                   'HSHK50', 'HSCN', 'HSINT', 'HSREIT', 'HSUTIL')
     return any(clean_sym.upper().startswith(p) for p in hk_prefixes)
 
 def _is_a_share_index_symbol(clean_sym: str) -> bool:
@@ -317,7 +380,7 @@ def _is_a_share_index_symbol(clean_sym: str) -> bool:
 
 def _classify_index_symbol(sym: str) -> str:
     """
-    对单个 symbol 做清洗 + 分类，返回 ('a_share'|'hk'|'other', clean_sym)
+    对单个 symbol 做清洗 + 分类，返回 ('a_share'|'hk'|'other', original_sym)
     """
     if not sym or sym == '-':
         return ('skip', '')
@@ -395,6 +458,43 @@ def _build_index_daily_fallback(symbols: List[str], conn, now) -> Dict[str, Dict
             else:
                 pct = 0.0  # 只有一条记录或价格平盘
             db_data[symbol] = {"price": latest_price, "pct": round(pct, 4)}
+
+    # 3.5 [FIX] 当清洗后的符号在数据库中没有数据时，尝试用原始符号查询
+    # 例如: 930713.CSI -> 映射到 399006，但399006没有数据，而930713.CSI有数据
+    missing_clean = clean_set - set(db_data.keys())
+    if missing_clean:
+        clean_to_orig = {}
+        for orig_sym, clean_sym in orig_to_clean.items():
+            if clean_sym in missing_clean:
+                clean_to_orig[clean_sym] = orig_sym
+        
+        orig_symbols_to_query = list(clean_to_orig.values())
+        if orig_symbols_to_query:
+            placeholders2 = ','.join(['?' for _ in orig_symbols_to_query])
+            rows2 = conn.execute(f"""
+                SELECT symbol,
+                    MAX(CASE WHEN rn = 1 THEN close END) as latest_close,
+                    MAX(CASE WHEN rn = 2 THEN close END) as prev_close
+                FROM (
+                    SELECT symbol, close,
+                        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) as rn
+                    FROM index_history
+                    WHERE symbol IN ({placeholders2})
+                )
+                WHERE rn IN (1, 2)
+                GROUP BY symbol
+            """, orig_symbols_to_query).fetchall()
+            
+            for symbol, latest_price, prev_price in rows2:
+                if latest_price and latest_price > 0:
+                    if prev_price and prev_price > 0 and prev_price != latest_price:
+                        pct = (latest_price - prev_price) / prev_price * 100
+                    else:
+                        pct = 0.0
+                    for clean_sym, orig_sym in clean_to_orig.items():
+                        if orig_sym == symbol:
+                            db_data[clean_sym] = {"price": latest_price, "pct": round(pct, 4)}
+                            break
 
     # 4. 映射回原始 symbols
     res = {}
@@ -530,6 +630,22 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
                        'ARKK', 'ARKG', 'EEM', 'VWO', 'INDA', 'EWJ', 'KWEB', 'RSPH',
                        'LQD', 'HYG', 'TLT', 'IEF', 'SHY', 'AGG', 'BND'}
 
+    # [V10.19] HK非标指数→标准指数别名映射
+    # 腾讯/新浪只支持 HSI/HSCEI/HSTECH 三个标准HK指数
+    # 其他HK指数（HSCI/HSCCI/HSSCNE/HSSI/HSMI）通过此表映射到最接近的标准指数
+    _HK_INDEX_ALIAS_MAP = {
+        'HSCI': 'HSI',       # 恒生综合指数 → 恒生指数
+        'HSCCI': 'HSI',      # 恒生中国内地100 → 恒生指数
+        'HSSCNE': 'HSCEI',   # 恒生新经济 → 国企指数
+        'HSSI': 'HSCEI',     # 恒生小型股 → 国企指数
+        'HSMI': 'HSCEI',     # 恒生中型股 → 国企指数
+    }
+
+    # [V10.19] CSI代码(930xxx/931xxx等)不应走腾讯sh/sz查询，应直接走东财
+    def _is_csi_index_code(code: str) -> bool:
+        """判断是否为中证指数代码（如930914, 931234等）"""
+        return code.isdigit() and len(code) == 6 and (code.startswith('930') or code.startswith('931') or code.startswith('932'))
+
     import requests
     headers_tencent = {'Referer': 'https://finance.qq.com/', 'User-Agent': 'Mozilla/5.0'}
     headers_sina = {'Referer': 'https://finance.sina.com.cn/', 'Accept': 'text/event-stream'}
@@ -561,7 +677,12 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
         sina_req = ""
         ret_code = ""
         
-        if clean_sym.isdigit() and len(clean_sym) == 6:
+        # [V10.19] CSI代码(如930914)跳过腾讯/新浪，直接走东财
+        if _is_csi_index_code(clean_sym):
+            # CSI代码腾讯sh/sz查询返回无意义数据(如sh930914→v_pv_none_match)
+            # 跳过腾讯/新浪，让东财兜底处理
+            continue
+        elif clean_sym.isdigit() and len(clean_sym) == 6:
             if clean_sym.startswith('399') or clean_sym.startswith('159') or clean_sym.startswith('3999'):
                 tc_req = f"sz{clean_sym}"
                 sina_req = f"s_sz{clean_sym}"
@@ -569,12 +690,27 @@ def _fetch_realtime_indices(symbols: List[str], now) -> Dict[str, Dict[str, floa
                 tc_req = f"sh{clean_sym}"
                 sina_req = f"s_sh{clean_sym}"
             ret_code = clean_sym
-        elif 'HSTECH' in clean_sym:
+        # [V10.19] 港股指数→精确匹配，并在res中同时写入原始sym和别名对应关系
+        elif clean_sym == 'HSTECH':
             tc_req, sina_req, ret_code = "hkHSTECH", "rt_hkHSTECH", "HSTECH"
-        elif 'HSCEI' in clean_sym:
+        elif clean_sym == 'HSCEI':
             tc_req, sina_req, ret_code = "hkHSCEI", "rt_hkHSCEI", "HSCEI"
-        elif 'HSI' in clean_sym:
+        elif clean_sym == 'HSI':
             tc_req, sina_req, ret_code = "hkHSI", "rt_hkHSI", "HSI"
+        elif clean_sym in _HK_INDEX_ALIAS_MAP:
+            # 非标HK指数→映射到标准指数，同时记录映射关系
+            # 例如 HSCI→HSI, HSCCI→HSI, HSSI→HSCEI 等
+            mapped = _HK_INDEX_ALIAS_MAP[clean_sym]
+            if mapped == 'HSI':
+                tc_req, sina_req, ret_code = "hkHSI", "rt_hkHSI", "HSI"
+            elif mapped == 'HSCEI':
+                tc_req, sina_req, ret_code = "hkHSCEI", "rt_hkHSCEI", "HSCEI"
+            elif mapped == 'HSTECH':
+                tc_req, sina_req, ret_code = "hkHSTECH", "rt_hkHSTECH", "HSTECH"
+            else:
+                continue
+            # 在tc_to_syms/sina_to_syms中同时注册原始sym和ret_code的映射
+            # 这样API返回ret_code时，能将数据写入res[original_sym]
         elif clean_sym.startswith('.') and len(clean_sym) <= 10:
             # [V10.13] 美股指数（.INX, .NDX, .SP500-45 等）走新浪获取
             sina_req = f"s_sh{clean_sym}"
@@ -788,9 +924,9 @@ class FundService:
                 _dashboard_cache.set(cache_key, [])
                 return []
 
-            # ── 2. 批量获取 fund_info 状态费率 ──
+            # ── 2. 批量获取 fund_purchase_status 状态费率（AKShare 日更）──
             status_df = pd.read_sql_query(
-                "SELECT fund_code, purchase_status, redemption_status, purchase_fee, redemption_fee FROM fund_info",
+                "SELECT fund_code, purchase_status, redemption_status, purchase_fee, redemption_fee, purchase_limit FROM fund_purchase_status",
                 engine
             )
             status_dict = status_df.set_index('fund_code').to_dict('index')
@@ -1023,9 +1159,12 @@ class FundService:
                                 metrics['static_premium'] = round((metrics['price'] / metrics['static_val'] - 1) * 100, 3)
 
 
-                    # 3.2 【普通国内LOF/QDII亚洲极速估值】 - 仅对无权重篮子的基金使用简化指数估值
-                    if not metrics.get('rt_val') and code not in funds_with_basket:
-                        rel_idx = fund.get('related_index')
+                    # 3.2 【普通国内LOF/QDII亚洲极速估值】 - 仅对无权重篮子且无trade_etf的基金使用简化指数估值
+                    # [FIX] 只有美股ETF（如162411→XOP）才跳过简化指数估值，港股/A股指数应正常走此路径
+                    rel_idx = fund.get('related_index', '')
+                    idx_category, _ = _classify_index_symbol(rel_idx)
+                    is_us_etf = (idx_category == 'skip')  # 美股ETF在_classify_index_symbol中返回'skip'
+                    if not metrics.get('rt_val') and code not in funds_with_basket and not is_us_etf:
                         nav_home = float(metrics.get('nav', 0))
                         # [严格模式] 只有当 related_index 有效时才进行指数估值
                         # QDII亚洲基金的 related_index 字段为 '-'（占位符），需要补充真实指数代码
@@ -1065,6 +1204,11 @@ class FundService:
                             basket_df = pd.read_sql("SELECT underlying_symbol as symbol, weight FROM fund_basket_weights WHERE fund_code=%s AND date = (SELECT MAX(date) FROM fund_basket_weights WHERE fund_code=%s)", engine, params=(code, code))
                             if not basket_df.empty:
                                 fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
+                            else:
+                                # [AI-2026-06-28] basket为空时，从 YAML 配置回退 valuation_portfolio（如 513350/159518/159502 纯ETF基金）
+                                yaml_portfolio = fund.get('valuation_portfolio') or fund.get('hedging_portfolio')
+                                if yaml_portfolio:
+                                    fund_cfg["valuation_portfolio"] = yaml_portfolio
                         except:
                             pass
                         
@@ -1075,8 +1219,17 @@ class FundService:
                                 # [V10.1] 汇率当天不变，直接读内存
                                 _ensure_daily_snapshot(self.db)
                                 current_fx = _daily_snapshot.get('usd_cny_mid')
-                            except:
-                                pass
+                                # [V11.0] 在岸价基金：用快照里的在岸价（启动时已从新浪加载）
+                                if code in _FUNDS_WITH_SPOT_RATE:
+                                    spot_fx = _daily_snapshot.get('usd_cny_spot', 0)
+                                    if spot_fx > 0:
+                                        current_fx = spot_fx
+                                        logger.debug(f"[{code}] 使用快照在岸价: {spot_fx}")
+                                    else:
+                                        current_fx = 0  # 在岸价不可用，禁止用中间价兜底
+                                        logger.warning(f"[{code}] 快照在岸价为空，跳过估值")
+                            except Exception as e:
+                                logger.warning(f"[{code}] 获取快照汇率失败: {e}")
                             
                             if current_fx and current_fx > 0:
                                 # 获取实时 ETF 价格
@@ -1125,16 +1278,20 @@ class FundService:
                                                     b_position = base_data.get('position', None)
                                                     if pd.isna(b_position) or b_position is None:
                                                         b_position = float(fund.get('pos_ratio') or 0.95)
-                                                        
-                                                    # [FIX] 汇率兜底：优先用 current_fx，其次 base_data，最后查数据库最新汇率
-                                                    fx = current_fx if (current_fx and current_fx > 0) else float(base_data.get('exchange_rate', 0) or 0)
-                                                    if fx <= 0:
-                                                        try:
-                                                            fx_df = pd.read_sql("SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine)
-                                                            if not fx_df.empty and fx_df.iloc[0]['usd_cny_mid'] > 0:
-                                                                fx = fx_df.iloc[0]['usd_cny_mid']
-                                                        except:
-                                                            pass
+                                                    # [V11.0] 在岸价基金：用快照在岸价，不降级
+                                                    if code in _FUNDS_WITH_SPOT_RATE:
+                                                        spot_fx = _daily_snapshot.get('usd_cny_spot', 0)
+                                                        fx = spot_fx if spot_fx > 0 else 0
+                                                    else:
+                                                        # [FIX] 汇率兜底：优先用 current_fx，其次 base_data，最后查数据库最新汇率
+                                                        fx = current_fx if (current_fx and current_fx > 0) else float(base_data.get('exchange_rate', 0) or 0)
+                                                        if fx <= 0:
+                                                            try:
+                                                                fx_df = pd.read_sql("SELECT usd_cny_mid FROM exchange_rate ORDER BY date DESC LIMIT 1", engine)
+                                                                if not fx_df.empty and fx_df.iloc[0]['usd_cny_mid'] > 0:
+                                                                    fx = fx_df.iloc[0]['usd_cny_mid']
+                                                            except:
+                                                                pass
                                                     
                                                     # [FIX] hedge 兜底：当 hedge 缺失时，从 base_data 中的 ETF 基准价格估算
                                                     # hedge = (基准 ETF 价格 * 汇率) / 净值
@@ -1142,7 +1299,6 @@ class FundService:
                                                         base_etf_price = base_data.get(trade_etf, base_data.get('^' + trade_etf, 0))
                                                         if base_etf_price and base_etf_price > 0:
                                                             b_hedge = (base_etf_price * fx) / b_nav
-                                                    
                                                     if b_nav > 0 and b_hedge > 0 and fx > 0:
                                                         # val = nav * (1 - pos) + (etf_price * fx) / hedge
                                                         val_res = b_nav * (1.0 - b_position) + (etf_price * fx) / b_hedge
@@ -1207,6 +1363,7 @@ class FundService:
                 fund_dict['redemption_status'] = st.get('redemption_status', '未知')
                 fund_dict['purchase_fee'] = st.get('purchase_fee', '-')
                 fund_dict['redemption_fee'] = st.get('redemption_fee', '-')
+                fund_dict['purchase_limit'] = st.get('purchase_limit', None)
                 
                 # 指数信息
                 fund_dict['idx_code'] = fund.get('idx_code', '-')
@@ -1260,7 +1417,7 @@ class FundService:
             # 判断是否是港币基金。若是，在返回的 usd_cny_mid 字段里使用港币汇率 hkd_cny_mid
             is_hkd_fund = False
             try:
-                fund_info_df = pd.read_sql("SELECT category, idx_name FROM fund_info WHERE fund_code=%s LIMIT 1", engine, params=(fund_code,))
+                fund_info_df = pd.read_sql("SELECT category, idx_name FROM unified_fund_list WHERE fund_code=%s LIMIT 1", engine, params=(fund_code,))
                 if not fund_info_df.empty:
                     cat = str(fund_info_df.iloc[0]['category'] or '')
                     idx_name = str(fund_info_df.iloc[0]['idx_name'] or '')
@@ -1541,11 +1698,8 @@ class FundService:
                 item['nav_date'] = latest_nav_date
                 item['latest_nav'] = latest_nav
 
-                # 静态溢价 = 收盘价 / 净值
-                nav_val = item.get('nav')
-                price_val = item.get('price')
-                if nav_val and nav_val > 0 and price_val and price_val > 0:
-                    item['static_premium'] = (price_val / nav_val - 1) * 100
+                # [AI-2026-06-28] 静态溢价已由入库时用 T-1 净值算好，直接使用 h.premium
+                # 不再覆盖计算，避免 AI 瞎改
 
                 # [511360] 附加国债指数数据
                 if fund_code == '511360':
@@ -1688,6 +1842,11 @@ class FundService:
             )
             if not basket_df.empty:
                 fund_cfg["valuation_portfolio"] = basket_df.to_dict('records')
+            else:
+                # [AI-2026-06-28] basket为空时，从 YAML 配置回退 valuation_portfolio
+                yaml_portfolio = fund.get('valuation_portfolio') or fund.get('hedging_portfolio')
+                if yaml_portfolio:
+                    fund_cfg["valuation_portfolio"] = yaml_portfolio
 
             # 获取底层的 calculator 基准数据
             calculator = self._get_calculator()
@@ -1737,7 +1896,7 @@ class FundService:
                         pass  # 指数符号不加入实时行情查询
                     else:
                         etf_symbols.append(trade_etf)
-            # [V10.9] 加入基金自身行情（供 Ghost 保守/内卷模式使用 lof_bid/lof_ask）
+            # [V10.9] 加入基金自身行情（供 Lazy 保守/内卷模式使用 lof_bid/lof_ask）
             if code not in etf_symbols:
                 etf_symbols.append(code)
 

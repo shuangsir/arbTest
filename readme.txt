@@ -11,7 +11,14 @@
 
 --------------------------------------------------------------------------------
 二、 极速启动
-在主目录下，双击运行以下批处理文件即可一键启动：
+
+【首次使用前必读】
+  从 GitHub 下载的 `database/arb_master_share.db` 需要重命名为 `arb_master.db`：
+    >> cd C:\D_drive\013CODE\arbTest\database
+    >> ren arb_master_share.db arb_master.db
+
+【启动看板】
+  在主目录下，双击运行以下批处理文件即可一键启动：
   >> start_dashboard.bat  (一键启动后端 8000 端口服务 + 前端 5173 页面监控服务)
 
 * 注：浏览器会自动打开网页看板 (http://localhost:5173/)。
@@ -61,16 +68,16 @@
 如果启动后遇到问题（如前端白屏、数据不更新等），可以手动重启前后端：
 
   1) 重启前端（前端页面不显示或样式异常时）：
-     >> cd D:\Study\arbTest\ArbDashboard\frontend
+     >> cd C:\D_drive\013CODE\arbTest\ArbDashboard\frontend
      >> npm run dev          # 开发模式（热重载）
      >> npm run build        # 构建生产版本（启动脚本会自动调用此命令）
 
   2) 重启后端（数据不更新或报错时）：
-     >> cd D:\Study\arbTest\ArbDashboard\backend
+     >> cd C:\D_drive\013CODE\arbTest\ArbDashboard\backend
      >> python main.py       # 启动后端服务（端口 8000）
 
   3) 一键重启（推荐）：
-     >> 双击 D:\Study\arbTest\ArbDashboard\start_dashboard.bat
+     >> 双击 C:\D_drive\013CODE\arbTest\ArbDashboard\start_dashboard.bat
      该脚本会自动执行 npm run build + python main.py + npm run dev
 
 * 注：修改前端代码后需要执行 npm run build 才能生效；修改后端 Python 代码后需要重启 python main.py 才能生效。
@@ -113,6 +120,27 @@
       1. 对应客户端（如通达信、QMT、IB Gateway、富途 OpenD）已经启动
       2. 客户端已登录并处于正常状态
       3. 如果是周末非交易时段，QMT 可能处于休眠状态，部分功能受限
+
+-------------------------------------------------------------------------------
+七、 日志查看与自我 Debug 指引
+
+如果程序运行异常（数据不更新、启动失败等），可以先查看以下日志文件定位问题：
+
+  1) 后端服务日志（main.py 启动全过程）：
+     路径：ArbDashboard/logs/2026-06-29_094542.log  （按日期自动生成）
+     内容：后端启动、数据源连接、指数行情获取等
+     常见排查：查看是否有报错信息，以及各数据源连接状态
+
+  2) daily_updater 流水线日志（盘后数据更新全过程）：
+     路径：ArbDashboard/backend/scheduler/logs/daily_updater_20260629.log  （按日期自动生成）
+     内容：每个步骤的详细信息（Woody 数据 → 汇率 → 收盘价 → 净值 → 申购状态 → ...）
+     常见排查：查看 "=== 步骤X ===" 标记，快速定位是在哪一步卡住
+
+  3) Woody API 数据缓存（VPS 云端同步 & 本地 API 兜底）：
+     路径：ArbDashboard/data/vps_sync/     （从 VPS 拉取的 JSON 数据备份）
+     路径：ArbDashboard/data/woodyAPI/     （本地 Woody API 调用缓存）
+     内容：woody_*.json 文件（含估值基准日、仓位因子、篮子权重等）
+     常见排查：检查 woody_*.json 日期是否最新，以及 "date" 字段的基准日是否正确
 
 --------------------------------------------------------------------------------
 

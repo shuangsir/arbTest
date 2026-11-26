@@ -12,9 +12,12 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // Fixed to 5273 so it never collides with the CTA frontend on 5173.
+    port: 5273,
+    strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8100',
         changeOrigin: true,
         configure: (proxy, _options) => {
           // Suppress ECONNREFUSED spam when backend isn't ready yet

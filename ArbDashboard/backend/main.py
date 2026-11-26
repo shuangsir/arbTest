@@ -6,7 +6,7 @@ import logging
 import warnings
 from logging.handlers import RotatingFileHandler
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -258,6 +258,13 @@ except (ImportError, NameError):
     ghost_simulator_instance = None
 
 try:
+    from private.lazy_simulator import lazy_simulator_instance
+    logger.info("Lazy Simulator loaded.")
+except (ImportError, NameError) as e:
+    lazy_simulator_instance = None
+    logger.info(f"Lazy Simulator not found: {e}")
+
+try:
     from private.signal_detector import signal_detector
     signal_detector.inject(
         rule_engine=auto_trade_runner.engine,
@@ -301,7 +308,10 @@ async def lifespan(app: FastAPI):
             if sys.platform != "win32":
                 return
 
-            scripts_dir = os.path.normpath(os.path.join(backend_dir, "..", "..", "arbcore", "scripts"))
+            logger.info("📊 启动时自动运行 011 数据更新任务...")
+            system_status.add_milestone("INFO", "启动时自动运行 011 数据更新")
+            print("daily_updater 即将启动...")
+            scripts_dir = os.path.normpath(os.path.join(backend_dir, "scheduler"))
             script_path = os.path.join(scripts_dir, "daily_updater.py")
             
             python_exe_candidates = [
@@ -348,7 +358,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_mds_later())
 
         def _get_scripts_dir():
-            return os.path.normpath(os.path.join(backend_dir, "..", "..", "arbcore", "scripts"))
+            # [AI-2026-06-28] daily_updater.py 在 scheduler/ 下
+            return os.path.normpath(os.path.join(backend_dir, "scheduler"))
         def _find_python():
             for candidate in [
                 os.path.normpath(os.path.join(backend_dir, "..", "..", ".venv", "Scripts", "python.exe")),
@@ -855,6 +866,82 @@ async def delete_fund_config(code: str):
     success = config_manager_service.delete_fund_config(code)
     return {"status": "ok" if success else "error"}
 
+@app.get("/api/config/funds/export")
+async def export_fund_config():
+    """导出 lof_config.yaml 为文件下载（带时间戳文件名）"""
+    from fastapi.responses import Response
+    from datetime import datetime
+    try:
+        yaml_content = config_manager_service.export_config()
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"lof_config_{ts}.yaml"
+        return Response(
+            content=yaml_content,
+            media_type="application/x-yaml",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error(f"导出 YAML 失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/config/funds/import")
+async def import_fund_config(file: UploadFile = File(...)):
+    """从上传的 YAML 文件导入基金配置"""
+    try:
+        content = await file.read()
+        yaml_text = content.decode('utf-8')
+        config_manager_service.import_config(yaml_text)
+        return {"status": "ok", "message": "导入成功，旧配置已备份为 .bak"}
+    except Exception as e:
+        logger.error(f"导入 YAML 失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+# --- IB 核心套利标的配置 APIs ---
+@app.get("/api/config/ib_core_symbols")
+async def get_ib_core_symbols():
+    """获取 IB 核心套利标的白名单"""
+    from arbcore.config.symbol_source_map import IB_CORE_ARBITRAGE_SYMBOLS
+    return {"status": "ok", "data": IB_CORE_ARBITRAGE_SYMBOLS}
+
+@app.post("/api/config/ib_core_symbols")
+async def update_ib_core_symbols(request: Request):
+    """更新 IB 核心套利标的白名单（运行时生效，不持久化到文件）"""
+    from arbcore.config.symbol_source_map import IB_CORE_ARBITRAGE_SYMBOLS, SOURCE_SYMBOL_MAP, US_ETF_MAP
+    try:
+        data = await request.json()
+        symbols = data.get('symbols', [])
+        
+        if not symbols:
+            return {"status": "error", "message": "标的列表不能为空"}
+        
+        # 验证：所有标的必须在 US_ETF_MAP 中
+        for sym in symbols:
+            if sym not in US_ETF_MAP:
+                return {"status": "error", "message": f"标的 {sym} 不在美股 ETF 映射表中"}
+        
+        # 更新全局变量
+        IB_CORE_ARBITRAGE_SYMBOLS.clear()
+        IB_CORE_ARBITRAGE_SYMBOLS.extend(symbols)
+        
+        # 重建 SOURCE_SYMBOL_MAP
+        SOURCE_SYMBOL_MAP['IB'] = list(symbols)
+        SOURCE_SYMBOL_MAP['IB_CORE_ONLY'] = list(symbols)
+        
+        # 重新分流：非核心标的归入 FUTU
+        for symbol, source in {**US_ETF_MAP}.items():
+            if source == 'IB' and symbol not in symbols:
+                if symbol not in SOURCE_SYMBOL_MAP['FUTU']:
+                    SOURCE_SYMBOL_MAP['FUTU'].append(symbol)
+        
+        # 去重排序
+        for source in SOURCE_SYMBOL_MAP:
+            SOURCE_SYMBOL_MAP[source] = sorted(set(SOURCE_SYMBOL_MAP[source]))
+        
+        return {"status": "ok", "message": f"IB 核心标的已更新为 {len(symbols)} 只", "data": symbols}
+    except Exception as e:
+        logger.error(f"更新 IB 核心标的失败: {e}")
+        return {"status": "error", "message": str(e)}
+
 # --- Private / Custom Export APIs ---
 @app.get("/api/private/status")
 async def get_private_status():
@@ -881,14 +968,14 @@ async def export_fund_data(code: str):
         }
     )
 
-@app.get("/api/private/ghost_calc")
-async def ghost_calc(fund_code: str = "162411"):
+@app.get("/api/private/lazy_calc")
+async def lazy_calc(fund_code: str = "162411"):
     """
     幽灵做市商实时计算 — 复用 fund_service.get_valuation_meta() 获取完整估值数据。
-    额外计算 Ghost 特有模式（safe/peg）的折溢价。
+    额外计算 Lazy 特有模式（safe/peg）的折溢价。
     """
-    if not ghost_trader_instance:
-        return JSONResponse(status_code=403, content={"status": "error", "message": "Ghost Trader not loaded"})
+    if not lazy_trader_instance:
+        return JSONResponse(status_code=403, content={"status": "error", "message": "Lazy Trader not loaded"})
 
     try:
         # 1. 复用现有估值元数据（含 hedge、汇率、实时报价、T-1 基准等）
@@ -963,13 +1050,13 @@ async def ghost_calc(fund_code: str = "162411"):
                     if us_ask <= 0:
                         us_ask = float(q.get("price", 0) or 0)
             except Exception as e:
-                logger.error(f"[GhostCalc] failed to get quote for {underlying_clean}: {e}")
+                logger.error(f"[LazyCalc] failed to get quote for {underlying_clean}: {e}")
 
         # 4. hedge 值（复用 get_valuation_meta 返回的）
         hedge = float(base_data.get("hedge", 0)) if base_data else 0
         position = float(fund_cfg.get("position", 95.0)) / 100.0 if fund_cfg else 0.95
 
-        # 5. Ghost 特有溢价计算（safe 砸单 / peg 内卷）
+        # 5. Lazy 特有溢价计算（safe 砸单 / peg 内卷）
         # 正确公式: val = base_nav * (1 - pos) + (us_price * fx) / hedge  (注意: 第二项不乘pos)
         base_nav = float(base_data.get("nav", 0)) if base_data else 0
         if base_nav > 0 and hedge > 0:
@@ -1009,18 +1096,19 @@ async def ghost_calc(fund_code: str = "162411"):
         return {"status": "ok", "data": result}
 
     except Exception as e:
-        logger.error(f"[GhostCalc] Error: {e}", exc_info=True)
+        logger.error(f"[LazyCalc] Error: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
-@app.post("/api/private/ghost_place_order")
-async def ghost_place_order(request: Request):
+@app.post("/api/private/lazy_place_order")
+async def lazy_place_order(request: Request):
     """
     幽灵做市商下单接口
     - quantity: LOF 份额数（如 59500），系统自动用 hedge 系数换算出 ETF 对冲股数
     - etf_quantity: 可选，如果前端已算好 ETF 股数，直接使用（绕开换算）
     """
-    if not ghost_trader_instance:
-        return JSONResponse(status_code=403, content={"status": "error", "message": "Ghost Trader not loaded"})
+    if not lazy_trader_instance:
+        logger.warning("[LazyOrder] lazy_trader_instance is None - orders will be rejected")
+        return JSONResponse(status_code=403, content={"status": "error", "message": "Lazy Trader not loaded"})
     try:
         body = await request.json()
         mode = body.get("mode", "safe")          # "safe"/"peg" 向后兼容
@@ -1031,6 +1119,7 @@ async def ghost_place_order(request: Request):
         lof_price = float(body.get("lof_price", 0))  # LOF 限价
         lof_quantity = int(body.get("quantity", 0))
         etf_quantity = int(body.get("etf_quantity", 0))
+        logger.info(f"[LazyOrder] mode={mode} dir={direction} fund={fund_code} etf={underlying_symbol} etf_qty={etf_quantity} price={price}")
 
         if etf_quantity <= 0 and lof_quantity > 0:
             try:
@@ -1082,22 +1171,16 @@ async def ghost_place_order(request: Request):
             etf_quantity = max(1, int(round(lof_quantity / hedge)))
 
         if mode == "peg":
-            results = ghost_trader_instance.place_peg_order(
+            results = lazy_trader_instance.place_peg_order(
                 underlying_symbol=underlying_symbol,
                 quantity=etf_quantity,
                 us_ask1=price,
             )
         elif direction == "close":
-            results = ghost_trader_instance.place_close_order(
-                fund_code=fund_code,
-                underlying_symbol=underlying_symbol,
-                lof_price=lof_price,
-                us_ask1=price,
-                lof_quantity=lof_quantity,
-                etf_quantity=etf_quantity,
-            )
+            # ⚠️ 平仓功能暂时禁用，用户手动平仓
+            results = [{"driver": "IB", "success": False, "msg": "平仓功能暂时禁用，请手动操作"}]
         else:
-            results = ghost_trader_instance.place_open_order(
+            results = lazy_trader_instance.place_open_order(
                 fund_code=fund_code,
                 underlying_symbol=underlying_symbol,
                 lof_price=lof_price,
@@ -1106,41 +1189,57 @@ async def ghost_place_order(request: Request):
                 etf_quantity=etf_quantity,
             )
         any_ok = any(r.get("success") for r in results)
+        logger.info(f"[LazyOrder] mode={mode} dir={direction} → any_ok={any_ok} results={results}")
         return {"status": "ok" if any_ok else "error", "data": results}
     except Exception as e:
-        logger.error(f"[GhostOrder] Error: {e}", exc_info=True)
+        logger.error(f"[LazyOrder] Error: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
-# --- Ghost Simulator API (weekend mock data) ---
-@app.get("/api/private/ghost_simulate/status")
-async def ghost_simulate_status():
-    """Get current simulation state and history"""
-    if not ghost_simulator_instance:
-        return JSONResponse(status_code=403, content={"status": "error", "message": "Ghost Simulator not loaded"})
-    return {"status": "ok", "data": ghost_simulator_instance.get_status()}
+@app.get("/api/private/lazy_status")
+async def lazy_status():
+    """Diagnostic: check LazyTrader driver status"""
+    if not lazy_trader_instance:
+        return {"status": "error", "message": "Lazy Trader not loaded"}
+    return {
+        "status": "ok",
+        "data": {
+            "ib_connected": bool(getattr(lazy_trader_instance, 'ib_reader', None) and getattr(lazy_trader_instance.ib_reader, 'connected', False)),
+            "ib_reader_exists": lazy_trader_instance.ib_reader is not None,
+            "galaxy_qmt_exists": lazy_trader_instance.galaxy_qmt is not None,
+            "guojin_qmt_exists": lazy_trader_instance.guojin_qmt is not None,
+        }
+    }
 
-@app.post("/api/private/ghost_simulate/control")
-async def ghost_simulate_control(request: Request):
+# --- Lazy Simulator API (weekend mock data) ---
+@app.get("/api/private/lazy_simulate/status")
+async def lazy_simulate_status():
+    """Get current simulation state and history"""
+    if not lazy_simulator_instance:
+        return JSONResponse(status_code=403, content={"status": "error", "message": "Lazy Simulator not loaded"})
+    return {"status": "ok", "data": lazy_simulator_instance.get_status()}
+
+@app.post("/api/private/lazy_simulate/control")
+async def lazy_simulate_control(request: Request):
     """Start/stop/reset simulation, or toggle forced signal"""
-    if not ghost_simulator_instance:
-        return JSONResponse(status_code=403, content={"status": "error", "message": "Ghost Simulator not loaded"})
+    if not lazy_simulator_instance:
+        return JSONResponse(status_code=403, content={"status": "error", "message": "Lazy Simulator not loaded"})
     try:
         body = await request.json()
         action = body.get("action", "status")
         if action == "start":
-            result = ghost_simulator_instance.start()
+            result = lazy_simulator_instance.start()
         elif action == "stop":
-            result = ghost_simulator_instance.stop()
+            result = lazy_simulator_instance.stop()
         elif action == "reset":
-            result = ghost_simulator_instance.reset()
+            result = lazy_simulator_instance.reset()
         elif action == "force_signal":
             enabled = body.get("enabled", True)
-            result = ghost_simulator_instance.set_forced_signal(enabled)
+            result = lazy_simulator_instance.set_forced_signal(enabled)
         else:
             return JSONResponse(status_code=400, content={"status": "error", "message": f"Unknown action: {action}"})
         return {"status": "ok", "data": result}
     except Exception as e:
-        logger.error("[GhostSim] Control error: %s", e)
+        logger.error("[LazySim] Control error: %s", e)
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 # --- Bond ETF BP Override API ---
@@ -1574,39 +1673,38 @@ async def reconnect_tdx():
 
 @app.post("/api/system/reconnect_galaxy")
 async def reconnect_galaxy():
-    """重连银河QMT - 使用 reconnect() 方法，试连 3 次"""
+    """银河QMT仅用于下单，不参与行情轮询"""
     try:
-        if market_data_service.realtime_manager:
-            rm = market_data_service.realtime_manager
-            galaxy = rm.active_fetchers.get('galaxy')
-            if galaxy:
-                success, msg = galaxy.reconnect()
-                if success:
-                    system_status.add_milestone("SUCCESS", f"银河QMT {msg}")
-                    return {"status": "ok", "message": msg}
-                else:
-                    system_status.add_milestone("WARNING", f"银河QMT {msg}")
-                    return {"status": "error", "message": msg}
-            else:
-                # V10.0 启动时跳过了客户端源，需要新创建实例并注册
-                from arbcore.fetchers.realtime.galaxy import GalaxyQmtFetcher
-                galaxy = GalaxyQmtFetcher()
-                success, msg = galaxy.reconnect()
-                if success:
-                    rm.active_fetchers['galaxy'] = galaxy
-                    if rm.symbols:
-                        galaxy.subscribe(rm.symbols)
-                    system_status.add_milestone("SUCCESS", f"银河QMT {msg}")
-                    return {"status": "ok", "message": msg}
-                else:
-                    system_status.add_milestone("WARNING", f"银河QMT {msg}")
-                    return {"status": "error", "message": msg}
-        else:
+        if not market_data_service.realtime_manager:
             system_status.add_milestone("WARNING", "实时行情管理器未启动")
             return {"status": "error", "message": "实时行情管理器未启动"}
+        rm = market_data_service.realtime_manager
+        galaxy = rm.active_fetchers.get('galaxy')
+        if galaxy:
+            success, msg = galaxy.reconnect()
+        else:
+            from arbcore.fetchers.realtime.galaxy import GalaxyQmtFetcher
+            galaxy = GalaxyQmtFetcher()
+            rm.active_fetchers['galaxy'] = galaxy
+            success, msg = galaxy.reconnect()
+        if success:
+            global ghost_trader_instance
+            if ghost_trader_instance is not None:
+                ghost_trader_instance.inject_drivers(
+                    ib_reader=getattr(market_data_service, 'ib_reader', None),
+                    galaxy_qmt=galaxy,
+                    guojin_qmt=rm.active_fetchers.get('guojin')
+                )
+            logger.info("[银河QMT] 下单通道正常，已注册active_fetchers (不参与行情轮询)")
+            system_status.add_milestone("SUCCESS", "银河QMT下单通道正常 (不参与行情)")
+            return {"status": "ok", "message": "银河QMT下单通道正常"}
+        else:
+            system_status.add_milestone("WARNING", msg)
+            return {"status": "error", "message": msg}
     except Exception as e:
-        system_status.add_milestone("ERROR", f"银河QMT重连异常: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.warning(f"[银河QMT] 连接失败: {e}")
+        system_status.add_milestone("WARNING", f"银河QMT下单通道连接失败: {e}")
+        return {"status": "error", "message": f"银河QMT连接失败: {e}"}
 
 @app.post("/api/system/reconnect_guojin")
 async def reconnect_guojin():
@@ -1632,10 +1730,10 @@ async def reconnect_guojin():
                     rm.active_fetchers['guojin'] = guojin
                     if rm.symbols:
                         guojin.subscribe(rm.symbols)
-                    system_status.add_milestone("SUCCESS", f"国金QMT {msg}")
+                    system_status.add_milestone("SUCCESS", msg)
                     return {"status": "ok", "message": msg}
                 else:
-                    system_status.add_milestone("WARNING", f"国金QMT {msg}")
+                    system_status.add_milestone("WARNING", msg)
                     return {"status": "error", "message": msg}
         else:
             system_status.add_milestone("WARNING", "实时行情管理器未启动")
@@ -1652,8 +1750,8 @@ async def reconnect_engine():
 @app.post("/api/system/trigger/{task}")
 async def trigger_task(task: str):
     import subprocess
-    # [FIX] 脚本路径计算 - 彻底解耦 LOFarb，指向统一的 arbcore/scripts/daily_updater.py
-    scripts_dir = os.path.normpath(os.path.join(backend_dir, "..", "..", "arbcore", "scripts"))
+    # [AI-2026-06-28] 修复净值补采500错误：daily_updater.py 实际在 scheduler/ 下，不在 arbcore/scripts/
+    scripts_dir = os.path.normpath(os.path.join(backend_dir, "scheduler"))
     lofarb_dir = os.path.normpath(os.path.join(backend_dir, "..", "..", "LOFarb"))
     task_map = {
         "011": os.path.join(scripts_dir, "daily_updater.py"),
@@ -1912,7 +2010,7 @@ async def toggle_auto_trade_engine(request: Request):
 async def get_auto_trade_logs():
     return {"status": "ok", "logs": auto_trade_runner.get_recent_logs()}
 
-# --- AutoExecutor (Ghost Trader 自动执行) APIs ---
+# --- AutoExecutor (Lazy Trader 自动执行) APIs ---
 @app.get("/api/signal_detector/status")
 async def get_signal_detector_status():
     running = signal_detector.running if signal_detector else False
@@ -2024,9 +2122,10 @@ from fastapi.responses import FileResponse
 frontend_dist_path = os.path.join(workspace_root, "frontend", "dist")
 
 if os.path.exists(frontend_dist_path):
-    logger.info(f"Detected frontend dist at {frontend_dist_path}, mounting static files.")
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist_path, "assets")), name="assets")
-
+    assets_dir = os.path.join(frontend_dist_path, "assets")
+    if os.path.exists(assets_dir):
+        logger.info(f"Detected frontend dist at {frontend_dist_path}, mounting static files.")
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     # SPA Fallback: 用 middleware 代替 catch-all 路由，避免拦截 /api/* 请求
     from starlette.middleware.base import BaseHTTPMiddleware
     class SPAMiddleware(BaseHTTPMiddleware):
@@ -2073,6 +2172,9 @@ def kill_port_owner(port: int):
         logger.error(f"⚠️ [端口防护] 清理端口 {port} 残留进程失败: {e}")
 
 if __name__ == "__main__":
+    # Port moved 8000 -> 8100 so the CTA engine can keep 8000 for itself.
+    # Override with env ARB_PORT if ever needed.
+    ARB_PORT = int(os.environ.get("ARB_PORT", "8100"))
     if os.environ.get("ARB_KILL_PORT_OWNER") == "1":
-        kill_port_owner(8000)
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", access_log=False)
+        kill_port_owner(ARB_PORT)
+    uvicorn.run(app, host="0.0.0.0", port=ARB_PORT, log_level="info", access_log=False)

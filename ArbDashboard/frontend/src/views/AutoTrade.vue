@@ -246,7 +246,7 @@ const ruleColumns = [
         h(NButton, { quaternary: true, circle: true, size: 'tiny', onClick: () => openEditModal(row) }, { default: () => h(NIcon, null, { default: () => h(Edit) }) }),
         h(NButton, { quaternary: true, circle: true, size: 'tiny', type: 'error', onClick: () => deleteRule(row.id) }, { default: () => h(NIcon, null, { default: () => h(Trash2) }) }),
         h(NButton, { quaternary: true, circle: true, size: 'tiny', type: 'error',
-          onClick: () => router.push({ path: '/godmode', query: { code: row.target, name: row.name } })
+          onClick: () => router.push({ path: '/lazymode', query: { code: row.target, name: row.name } })
         }, { default: () => h(NIcon, null, { default: () => h(Ban) }) })
       ]})
     }

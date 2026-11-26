@@ -339,7 +339,7 @@ class DatabaseManager:
             )
         ''')
 
-        # jsl_fund_list 表
+# jsl_fund_list 表
         self.adapter.execute('''
             CREATE TABLE IF NOT EXISTS jsl_fund_list (
                 category TEXT,
@@ -350,6 +350,16 @@ class DatabaseManager:
                 target_type TEXT DEFAULT 'ETF'
             )
         ''')
+        
+        # [V11.0] 补齐 idx_code / idx_name 列（兼容旧版分享数据库）
+        try:
+            self.adapter.execute("ALTER TABLE unified_fund_list ADD COLUMN idx_code TEXT DEFAULT '-'")
+        except Exception:
+            pass
+        try:
+            self.adapter.execute("ALTER TABLE unified_fund_list ADD COLUMN idx_name TEXT DEFAULT '-'")
+        except Exception:
+            pass
         
         # index_history 表
         self.adapter.execute('''
@@ -412,9 +422,14 @@ class DatabaseManager:
                 redemption_status TEXT,
                 purchase_fee TEXT,
                 redemption_fee TEXT,
+                purchase_limit REAL,
                 updated_at TIMESTAMP DEFAULT now()
             )
         ''')
+        try:
+            self.adapter.execute("ALTER TABLE fund_purchase_status ADD COLUMN purchase_limit REAL")
+        except Exception:
+            pass
     
     def _create_auxiliary_tables(self):
         """创建辅助表"""

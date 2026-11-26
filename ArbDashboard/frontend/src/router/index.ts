@@ -2,6 +2,13 @@ import { createRouter, createWebHistory } from 'vue-router'
 import MainLayout from '../layouts/MainLayout.vue'
 import Dashboard from '../views/Dashboard.vue'
 
+/**
+ * 懒加载 LazyTerminal.vue，文件不存在时降级为 Developing 页面
+ * - 本地开发：LazyTerminal.vue 存在 → 正常加载
+ * - 开源用户：LazyTerminal.vue 不存在 → 显示"功能开发中"
+ */
+const LazyTerminal = () => import('../views/LazyTerminal.vue').catch(() => import('../views/Developing.vue'))
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -46,17 +53,14 @@ const router = createRouter({
           component: () => import('../views/ETFRotation.vue')
         },
         {
-          path: 'godmode',
-          name: 'GodMode',
-          component: () => import('../private/GodMode.vue').catch(() => {
-            console.warn('Private module missing. Loading public placeholder.');
-            return import('../views/DongGeSecret.vue');
-          })
+          path: 'lazymode',
+          name: 'LazyMode',
+          component: () => import('../views/DongGeSecret.vue')
         },
         {
-          path: 'ghost',
-          name: 'Ghost',
-          component: () => import('../views/Ghost.vue')
+          path: 'lazy',
+          name: 'LazyTerminal',
+          component: LazyTerminal
         },
         {
           path: 'developing',

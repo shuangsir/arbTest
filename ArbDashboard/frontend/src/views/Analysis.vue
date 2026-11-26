@@ -19,20 +19,28 @@
               </n-checkbox>
               <n-divider vertical />
               <!-- 分类筛选 -->
-              <n-checkbox-group v-model:value="selectedCategories">
-                <n-checkbox value="gold_oil" label="黄金原油" label-style="font-weight: bold; color: #333;" />
-                <n-checkbox value="qdii_us" label="QDII欧美" label-style="font-weight: bold; color: #333;" />
-                <n-checkbox value="qdii_asia" label="QDII亚洲" label-style="font-weight: bold; color: #333;" />
-                <n-checkbox value="domestic_lof" label="国内LOF" label-style="font-weight: bold; color: #333;" />
-                <n-checkbox value="silver" label="白银" label-style="font-weight: bold; color: #333;" />
-              </n-checkbox-group>
+              <n-checkbox :checked="selectedCategories.includes('gold_oil')" @update:checked="toggleCategory('gold_oil')" label-style="font-weight: bold; color: #333;">
+                黄金原油
+              </n-checkbox>
+              <n-checkbox :checked="selectedCategories.includes('qdii_us')" @update:checked="toggleCategory('qdii_us')" label-style="font-weight: bold; color: #333;">
+                QDII欧美
+              </n-checkbox>
+              <n-checkbox :checked="selectedCategories.includes('qdii_asia')" @update:checked="toggleCategory('qdii_asia')" label-style="font-weight: bold; color: #333;">
+                QDII亚洲
+              </n-checkbox>
+              <n-checkbox :checked="selectedCategories.includes('domestic_lof')" @update:checked="toggleCategory('domestic_lof')" label-style="font-weight: bold; color: #333;">
+                国内LOF
+              </n-checkbox>
+              <n-checkbox :checked="selectedCategories.includes('silver')" @update:checked="toggleCategory('silver')" label-style="font-weight: bold; color: #333;">
+                白银
+              </n-checkbox>
             </div>
             <!-- 右侧：折价率阈值 -->
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
               <span style="font-size: 12px; color: #666;">折价率:</span>
-              <n-input-number v-model:value="premiumThreshold" :min="-10" :max="10" :step="0.1" style="width: 100px;" size="small" /> %
+              <n-input-number v-model:value="premiumThreshold" :min="-10" :max="10" :step="0.1" style="width: 100px;" size="small" @update:value="onThresholdChange" /> %
               <span style="font-size: 12px; color: #666;">~</span>
-              <n-input-number v-model:value="premiumUpperThreshold" :min="-10" :max="10" :step="0.1" style="width: 100px;" size="small" /> %
+              <n-input-number v-model:value="premiumUpperThreshold" :min="-10" :max="10" :step="0.1" style="width: 100px;" size="small" @update:value="onThresholdChange" /> %
               <n-tag type="success" ghost>触发: {{ premiumThreshold }}% ~ {{ premiumUpperThreshold }}%</n-tag>
             </div>
           </div>
@@ -45,7 +53,16 @@
           bordered
           :pagination="{ pageSize: 10 }"
           class="radar-table"
-        />
+        >
+          <template #empty>
+            <div style="padding: 40px 0; text-align: center; color: #999;">
+              <n-icon size="48" color="#ddd"><SearchX /></n-icon>
+              <p style="margin-top: 12px; font-size: 14px;">
+                {{ selectedCategories.length === 0 ? '请在上方选择一个分类' : '该分类下暂无符合条件的基金' }}
+              </p>
+            </div>
+          </template>
+        </n-data-table>
       </n-card>
     </div>
 
@@ -281,14 +298,15 @@
                    <div style="width: 160px; flex-shrink: 0;">
                       <span style="font-size:15px; font-weight:bold; color:#0284c7;">ETF实时估值</span>
                    </div>
-                   <div style="width: 140px; flex-shrink: 0; display: flex; align-items: center;">
-                      <div v-for="(item, index) in uniqueValuationSymbols" :key="item.symbol" style="display: flex; align-items: center;">
-                         <span v-if="index === 0" style="color:#1565c0; font-size:14px; font-weight:bold; width: 60px; text-align: right; padding-right: 6px;">{{ item.symbol }}价</span>
-                         <span v-else style="color:#1565c0; font-size:14px; font-weight:bold; padding-right: 6px; padding-left: 12px;">{{ item.symbol }}价</span>
-                         <input type="number" v-model.number="testEtfPrices[item.symbol]" step="0.01" style="width: 65px; padding: 2px 4px; font-size: 13px; font-family:monospace; border: 1px solid #ccc; border-radius: 4px; color:#1565c0; font-weight:bold; text-align:center;" :data-sym="item.symbol">
-                      </div>
-                   </div>
-                   <div v-if="isComplexCategory" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; flex-wrap: nowrap;">
+                     <!-- [AI-2026-06-29] 修复多标的ETF价格输入框溢出：去掉固定宽度140px，改为自适应 -->
+                     <div style="flex-shrink: 0; display: flex; align-items: center; gap: 2px;">
+                        <div v-for="(item, index) in uniqueValuationSymbols" :key="item.symbol" style="display: flex; align-items: center; white-space: nowrap;">
+                          <span v-if="index === 0" style="color:#1565c0; font-size:14px; font-weight:bold; width: 60px; text-align: right; padding-right: 6px; flex-shrink: 0;">{{ item.symbol }}价</span>
+                          <span v-else style="color:#1565c0; font-size:14px; font-weight:bold; padding-right: 6px; padding-left: 12px; flex-shrink: 0;">{{ item.symbol }}价</span>
+                          <input type="number" v-model.number="testEtfPrices[item.symbol]" step="0.01" style="width: 65px; padding: 2px 4px; font-size: 13px; font-family:monospace; border: 1px solid #ccc; border-radius: 4px; color:#1565c0; font-weight:bold; text-align:center; flex-shrink: 0;" :data-sym="item.symbol">
+                       </div>
+                    </div>
+                    <div v-if="isComplexCategory" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; flex-wrap: nowrap;">
                       <span style="font-size:13px; color:#333; white-space: nowrap;">投入</span>
                       <input type="number" v-model.number="targetCapitalEtf" step="1000" style="width: 65px; padding: 2px 4px; font-size: 13px; font-family:monospace; border: 1px solid #ccc; border-radius: 4px; font-weight:bold; text-align:center; color:#d35400;">
                       <span style="font-size:13px; color:#333; white-space: nowrap;">元 买入LOF</span>
@@ -629,13 +647,14 @@ import {
   NCard, NSpace, NButton,
   NText, NDataTable, NTag, NDatePicker, NIcon, NInputNumber, useMessage, NCheckbox, NDivider, NSelect, useDialog
 } from 'naive-ui'
-import { RefreshCw, Zap, ArrowLeft, Star, StarOff } from 'lucide-vue-next'
+import { RefreshCw, Zap, ArrowLeft, Star, StarOff, SearchX } from 'lucide-vue-next'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, BarChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, GridComponent, LegendComponent, DataZoomComponent, VisualMapComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
-import { getDashboard, getFundIntraday, getFundBasket, getFundHistory, getFundValuationMeta, getRealtimeQuote, placeOrder, addTrade } from '../api'
+import { getDashboard, getFundIntraday, getFundBasket, getFundHistory, getFundValuationMeta, getRealtimeQuote } from '../api'
+import { useOrderLogic } from '../composables/useOrderLogic'
 
 use([CanvasRenderer, LineChart, BarChart, TitleComponent, TooltipComponent, GridComponent, LegendComponent, DataZoomComponent, VisualMapComponent])
 
@@ -1323,7 +1342,7 @@ const handleBack = () => { window.location.replace('/') }
 const disableFutureDates = (ts: number) => ts > Date.now()
 const handleDateChange = () => { fetchIntraday(); fetchValuationMeta(); }
 
-const fetchDashboard = async () => {
+const fetchDashboard = async (retryCount = 0) => {
   try {
     const res = await getDashboard()
     let data = res.data.data
@@ -1333,7 +1352,7 @@ const fetchDashboard = async () => {
       data = data.filter((f: any) => watchlist.value.includes(f.fund_code))
     }
     
-    // 2. 分类筛选（不选分类时显示全部）
+    // 2. 分类筛选（不选分类时不显示任何基金）
     if (selectedCategories.value && selectedCategories.value.length > 0) {
       // 收集所有选中的分类对应的数据库category值
       const allowedCategories = new Set<string>()
@@ -1344,6 +1363,8 @@ const fetchDashboard = async () => {
         }
       }
       data = data.filter((f: any) => allowedCategories.has(f.category))
+    } else {
+      data = [] // [AI-2026-06-29] 默认不显示任何基金，只有选中分类才显示
     }
     
     // 3. 折价率阈值筛选：显示折价率在阈值范围内的基金
@@ -1352,7 +1373,30 @@ const fetchDashboard = async () => {
     data = data.filter((f: any) => f.rt_premium >= lower && f.rt_premium <= upper)
     
     opportunityData.value = data
-  } catch (e) {}
+  } catch (e) {
+    console.warn(`[雷达] fetchDashboard 失败 (第${retryCount + 1}次):`, e)
+    // 自动重试3次，间隔递增
+    if (retryCount < 3) {
+      const delay = (retryCount + 1) * 2000
+      setTimeout(() => fetchDashboard(retryCount + 1), delay)
+    }
+  }
+}
+
+// [AI-2026-06-29] 手动切换分类（替代n-checkbox-group，避免绑定问题）
+const toggleCategory = (key: string) => {
+  const idx = selectedCategories.value.indexOf(key)
+  if (idx > -1) {
+    selectedCategories.value.splice(idx, 1)
+  } else {
+    selectedCategories.value.push(key)
+  }
+  saveFilterSettings()
+  fetchDashboard()
+}
+const onThresholdChange = () => {
+  saveFilterSettings()
+  fetchDashboard()
 }
 
 const fetchIntraday = async () => {
@@ -1505,54 +1549,18 @@ const fetchValuationMeta = async () => {
 
 const fetchAll = () => { fetchIntraday(); fetchBasket(); fetchHistoryMeta(); fetchRealtimeDepth(); fetchValuationMeta(); }
 
+const { sendLofOrder, sendIbOrder } = useOrderLogic()
+
 const sendOrder = async (action: string, brokerType: 'lof' | 'ib' | 'ib_future') => {
-  let p = 0, v = 0, sym = '', broker = ''
-  let brokerName = ''
   if (brokerType === 'lof') {
-    p = simLofPrice.value; v = orderVol.value; sym = fundCode.value; broker = lofBroker.value
-    brokerName = broker === 'yinhe_qmt' ? '银河QMT' : (broker === 'tdx' ? '通达信' : '国金QMT')
+    await sendLofOrder(action, fundCode.value, fundName.value, simLofPrice.value, orderVol.value, lofBroker.value)
   } else if (brokerType === 'ib') {
-    p = hedgePrice.value; v = hedgeVol.value; sym = meta.value?.fund_config?.trade_etf?.split(',')?.[0]?.trim() || ''; broker = 'ib'
-    brokerName = 'IB (盈透证券)'
+    const tradeEtf = meta.value?.fund_config?.trade_etf?.split(',')?.[0]?.trim() || ''
+    await sendIbOrder(action, tradeEtf, hedgePrice.value, hedgeVol.value, fundCode.value)
   } else if (brokerType === 'ib_future') {
-    p = testFutPrice.value; v = targetLotsFuture.value; sym = meta.value?.fund_config?.trade_future || ''; broker = 'ib'
-    brokerName = 'IB 期货'
+    const tradeFuture = meta.value?.fund_config?.trade_future || ''
+    await sendIbOrder(action, tradeFuture, testFutPrice.value, targetLotsFuture.value, fundCode.value)
   }
-  
-  const actionName = action === 'BUY' ? '买入' : '卖出'
-  
-  dialog.warning({
-    title: '确认下单',
-    content: `您将向 [${brokerName}] 发起实盘委托，请确认参数：\n\n・ 标的代码: ${sym}\n・ 委托方向: ${actionName}\n・ 委托价格: ${p}\n・ 委托数量: ${v}`,
-    positiveText: '确认发送',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      message.loading('正在发送委托指令，请稍候...')
-      try {
-        console.log(`[Order] Sending request: action=${action}, code=${sym}, volume=${v}, price=${p}, broker=${broker}`)
-        const res = await placeOrder({ action, code: sym, volume: v, price: p, broker })
-        console.log(`[Order] Response received:`, res.data)
-        if (res.data.status === 'ok') {
-          message.success(`下单结果: ${res.data.message}`)
-          if (autoLog.value) {
-            await addTrade({
-              fund_code: fundCode.value, fund_name: fundName.value, action, volume: orderVol.value, price: simLofPrice.value,
-              hedge_symbol: sym, hedge_price: p, hedge_vol: v
-            })
-          }
-        } else {
-          message.error(`下单失败: ${res.data.message}`)
-          dialog.error({
-            title: '下单失败',
-            content: `券商/通道接口返回错误: ${res.data.message}`
-          })
-        }
-      } catch (e: any) {
-        console.error('[Order] Error:', e)
-        message.error(`接口调用异常: ${e.message || e}`)
-      }
-    }
-  })
 }
 
 const radarColumns = [

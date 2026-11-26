@@ -52,77 +52,22 @@
               立即更新净值
             </n-button>
           </div>
-
-          <n-divider title-placement="left">静态估值 (012)</n-divider>
-          <div class="task-grid">
-            <div v-for="task in manualTasks" :key="task.id" class="task-item">
-              <div class="task-info">
-                <div class="task-name">{{ task.name }}</div>
-                <div class="task-desc">{{ task.desc }}</div>
-              </div>
-              <n-button :type="task.type" size="small" @click="triggerTask('012')" :loading="task.running">
-                <template #icon><n-icon><Play /></n-icon></template>
-                立即执行
-              </n-button>
-            </div>
-          </div>
-
-          <n-divider title-placement="left">系统自检</n-divider>
-          <div class="task-grid">
-            <div class="task-item">
-              <div class="task-info">
-                <div class="task-name">一键自检</div>
-                <div class="task-desc">检查静态估值完整性、同步新鲜度、数据库健康</div>
-              </div>
-              <n-button type="primary" size="small" @click="runHealthCheck" :loading="healthRunning">
-                <template #icon><n-icon><Activity /></n-icon></template>
-                立即自检
-              </n-button>
-            </div>
-            <!-- 自检结果 -->
-            <n-collapse v-if="healthResult" :default-expanded-names="['result']" accordion>
-              <n-collapse-item title="自检报告" name="result">
-                <div class="health-result">
-                  <n-tag :type="healthResult.status === 'healthy' ? 'success' : 'warning'" size="small" round>
-                    {{ healthResult.status === 'healthy' ? '✅ 健康' : '⚠️ 异常' }}
-                  </n-tag>
-                  <div style="margin-top: 8px;">
-                    <div v-if="healthResult.issues.length === 0" class="text-green-600 font-medium">无异常</div>
-                    <div v-for="(issue, i) in healthResult.issues" :key="i" class="health-issue">
-                      <n-icon size="14" color="#d97706" style="margin-right: 4px;"><AlertTriangle /></n-icon>
-                      {{ issue }}
-                    </div>
-                  </div>
-                  <n-divider />
-                  <div class="health-stats">
-                    <div>基金总数: {{ healthResult.stats.fund_count }}</div>
-                    <div>数据总条数: {{ healthResult.stats.total_records }}</div>
-                    <div>检查日期: {{ healthResult.stats.checked_dates?.join(', ') }}</div>
-                  </div>
-                </div>
-              </n-collapse-item>
-            </n-collapse>
-          </div>
-
-          <n-divider title-placement="left">执行日志终端</n-divider>
-          <div class="terminal-box">
-             <div v-if="taskLogs.length === 0" class="text-gray-500 italic">等待任务启动...</div>
-             <div v-for="(log, i) in taskLogs" :key="i" class="log-line">
-                <span class="text-blue-400">>>></span> {{ log }}
-             </div>
-          </div>
         </n-card>
       </n-gi>
-
-      <!-- 右侧：基金配置（保持不变） -->
       <n-gi :span="10">
-        <n-card title="核心基金配置 (YAML)" class="shadow-soft">
+        <n-card title="核心基金配置" class="shadow-soft">
           <template #header-extra>
-            <n-button size="tiny" secondary @click="fetchFundConfigs">刷新列表</n-button>
+            <n-space>
+              <n-button size="tiny" @click="handleImportClick">导入</n-button>
+              <n-button size="tiny" @click="handleExportClick">导出</n-button>
+            </n-space>
           </template>
-          <div style="height: 300px; overflow-y: auto;">
-            <n-list small hoverable clickable v-if="fundConfigs.length > 0">
-              <n-list-item v-for="f in fundConfigs" :key="f.code" @click="editFund(f)">
+          <div class="mb-3">
+            <n-select v-model:value="selectedTab" :options="tabOptions" placeholder="点击基金分类" clearable style="width: 100%;" />
+          </div>
+          <div style="height: 260px; overflow-y: auto;">
+            <n-list small hoverable clickable v-if="filteredFunds.length > 0">
+              <n-list-item v-for="f in filteredFunds" :key="f.code" @click="editFund(f)">
                 <div class="flex-between">
                   <div>
                     <n-text strong>{{ f.code }}</n-text>
@@ -132,10 +77,10 @@
                 </div>
               </n-list-item>
             </n-list>
-            <n-empty v-else description="暂无基金配置" />
+            <n-empty v-else description="该分类下暂无基金配置" />
           </div>
-          <n-button block type="primary" dashed style="margin-top: 12px;" @click="addNewFund">
-             新增 QDII/LOF 基金配置
+          <n-button block type="primary" style="margin-top: 12px;" @click="addNewFund">
+             新增基金
           </n-button>
         </n-card>
 
@@ -155,10 +100,15 @@
             </n-text>
             <n-form-item label="选择导出基金">
                <n-input v-model:value="exportCode" placeholder="输入 6 位代码" />
+               <div class="flex gap-2 mt-2">
+                  <n-button v-for="code in quickCodes" :key="code" size="small" secondary @click="exportCode = code">
+                     {{ code }}
+                  </n-button>
+               </div>
             </n-form-item>
             <n-button type="primary" block style="margin-top: 10px;" @click="handleExport" :disabled="!exportCode">
               <template #icon><n-icon><FileDown /></n-icon></template>
-              生成并下载 (CSV)
+              导出
             </n-button>
           </div>
         </n-card>
@@ -223,54 +173,121 @@
          </div>
       </n-form>
     </n-modal>
+
+    <!-- 导入 YAML 弹窗 -->
+    <n-modal v-model:show="showImportModal" preset="card" title="导入基金配置" style="width: 500px;">
+      <n-alert type="warning" :bordered="false" style="margin-bottom: 16px;">
+        导入将<strong>覆盖</strong>当前所有基金配置，旧配置会自动备份为 .bak 文件。
+      </n-alert>
+      <n-upload
+        :default-upload="false"
+        accept=".yaml,.yml"
+        :max="1"
+        @change="handleFileChange"
+      >
+        <n-button>选择 YAML 文件</n-button>
+      </n-upload>
+      <div v-if="importFile" style="margin-top: 12px; padding: 8px 12px; background: #f0f9ff; border-radius: 6px;">
+        <n-text>{{ importFile.name }}</n-text>
+        <n-text depth="3" style="margin-left: 8px;">({{ (importFile.size / 1024).toFixed(1) }} KB)</n-text>
+      </div>
+      <div class="flex-end gap-2 mt-6">
+        <n-button @click="showImportModal = false">取消</n-button>
+        <n-button type="primary" @click="handleImportConfirm" :loading="importLoading" :disabled="!importFile">确认导入</n-button>
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import {
   NCard, NGrid, NGi, NButton, NIcon, NTag, NDivider, NFormItem, NInput, useMessage, NSpace, NText,
-  NList, NListItem, NEmpty, NModal, NForm, NInputNumber, NSelect, NAlert, NCollapse, NCollapseItem
+  NList, NListItem, NEmpty, NModal, NForm, NInputNumber, NSelect, NAlert, NUpload
 } from 'naive-ui'
-import { Play, FileDown, Database, Trash2, HelpCircle, RefreshCw, CheckCircle, Clock, Activity, AlertTriangle } from 'lucide-vue-next'
-import { triggerTask as triggerSystemTask, getFundConfigs, upsertFundConfig, deleteFundConfig } from '../api'
-import { getDataStatus, getNavStatus, getSystemHealthCheck } from '../api/systemApi'
+import { Play, FileDown, Database, Trash2, HelpCircle, RefreshCw, CheckCircle, Clock } from 'lucide-vue-next'
+import { triggerTask as triggerSystemTask, getFundConfigs, upsertFundConfig, deleteFundConfig, exportFundConfig, importFundConfig } from '../api'
+import { TAB_CATEGORIES } from '../store/fundStore'
+import { getDataStatus, getNavStatus } from '../api/systemApi'
 import client from '../api/client'
 
 const message = useMessage()
-const taskLogs = ref<string[]>([])
 const exportCode = ref('')
 const isPrivateVisible = ref(false)
+const quickCodes = ['162411', '164701', '164824']
+
+// 导入导出状态
+const showImportModal = ref(false)
+const importFile = ref<File | null>(null)
+const importLoading = ref(false)
+
+const handleImportClick = () => {
+  importFile.value = null
+  showImportModal.value = true
+}
+
+const handleFileChange = (data: { file: any; fileList: any[] }) => {
+  importFile.value = data.file.file || null
+}
+
+const handleExportClick = async () => {
+  try {
+    const res = await exportFundConfig()
+    const blob = new Blob([res.data], { type: 'application/x-yaml' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const ts = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)
+    link.setAttribute('download', `lof_config_${ts}.yaml`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    message.success('配置已导出')
+  } catch (e: any) {
+    message.error('导出失败: ' + (e.message || '未知错误'))
+  }
+}
+
+const handleImportConfirm = async () => {
+  if (!importFile.value) return
+  importLoading.value = true
+  try {
+    await importFundConfig(importFile.value)
+    message.success('导入成功，配置已更新')
+    showImportModal.value = false
+    importFile.value = null
+    fetchFundConfigs()
+  } catch (e: any) {
+    const errMsg = e?.response?.data?.message || e.message || '未知错误'
+    message.error('导入失败: ' + errMsg)
+  } finally {
+    importLoading.value = false
+  }
+}
+
+const tabOptions = [
+  { label: '黄金原油', value: '黄金原油' },
+  { label: 'QDII欧美', value: 'QDII欧美' },
+  { label: 'QDII亚洲', value: 'QDII亚洲' },
+  { label: '国内LOF', value: '国内LOF' },
+  { label: '白银', value: '白银' },
+  { label: '现金管理', value: '现金管理' }
+]
+const selectedTab = ref('')
+
+const filteredFunds = computed(() => {
+  if (!selectedTab.value) return fundConfigs.value
+  const categories = TAB_CATEGORIES[selectedTab.value] || []
+  if (categories.length === 0) return fundConfigs.value
+  return fundConfigs.value.filter(f => categories.includes(f.category))
+})
 
 // 数据同步状态
 const dataSources = ref<any[]>([])
 const morningReady = ref(false)
 const navLastTime = ref('')
 const navRunning = ref(false)
-
-// 自检状态
-const healthRunning = ref(false)
-const healthResult = ref<any>(null)
-
-const runHealthCheck = async () => {
-  healthRunning.value = true
-  taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 系统自检启动...`)
-  try {
-    const res = await getSystemHealthCheck()
-    healthResult.value = res.data
-    taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 自检完成: ${res.data.issues.length} 项异常`)
-    if (res.data.issues.length === 0) {
-      message.success('系统自检通过 ✅')
-    } else {
-      message.warning(`发现 ${res.data.issues.length} 项异常`)
-    }
-  } catch (e: any) {
-    message.error(`自检失败: ${e.message}`)
-    taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 自检失败: ${e.message}`)
-  } finally {
-    healthRunning.value = false
-  }
-}
 
 // 基金配置状态
 const fundConfigs = ref<any[]>([])
@@ -291,16 +308,6 @@ const anchorOptions = [
   { label: '日本时刻 (JP)', value: 'JP' },
   { label: '香港时刻 (HK)', value: 'HK' }
 ]
-
-const manualTasks = reactive([
-  {
-    id: '012',
-    name: '静态估值 (012)',
-    desc: '根据历史原材料重算静态估值',
-    type: 'info',
-    running: false
-  }
-])
 
 const getCategoryBadgeStyle = (cat: string) => {
     let textColor = '#4b5563';
@@ -343,44 +350,18 @@ const fetchNavStatus = async () => {
 
 const triggerNavUpdate = async () => {
   navRunning.value = true
-  taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 净值更新启动...`)
   try {
     const res = await triggerSystemTask('nav')
     if (res.data.status === 'ok') {
       message.success('净值更新已后台运行（通常 10-30 秒完成）')
-      taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 净值更新已后台运行`)
     } else {
       message.error(`启动失败: ${res.data.message}`)
     }
   } catch (e: any) {
     message.error(`启动失败: ${e.message}`)
-    taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 净值更新启动失败: ${e.message}`)
   } finally {
     setTimeout(() => { navRunning.value = false }, 2000)
     setTimeout(() => fetchNavStatus(), 3000)
-  }
-}
-
-const triggerTask = async (id: string) => {
-  const task = manualTasks.find(t => t.id === id)
-  if (!task) return
-  task.running = true
-  taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 任务 ${id} 启动...`)
-  try {
-    const res = await triggerSystemTask(id)
-    if (res.data.status === 'ok') {
-      message.success(`任务 ${id} 已后台运行`)
-      taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 任务 ${id} 启动成功`)
-    } else {
-      message.error(`任务启动失败: ${res.data.message}`)
-      taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 任务 ${id} 启动失败: ${res.data.message}`)
-    }
-  } catch (e: any) {
-    const errorMsg = e.response?.data?.message || e.message || '未知错误'
-    message.error(`任务启动失败: ${errorMsg}`)
-    taskLogs.value.unshift(`[${new Date().toLocaleTimeString()}] 任务 ${id} 启动失败: ${errorMsg}`)
-  } finally {
-    setTimeout(() => { task.running = false }, 1500)
   }
 }
 
@@ -512,11 +493,6 @@ onMounted(() => {
 }
 .task-name { font-weight: 600; color: #1e293b; font-size: 13px; }
 .task-desc { font-size: 11px; color: #64748b; }
-.terminal-box {
-  background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 6px;
-  height: 200px; overflow-y: auto; font-family: 'Fira Code', monospace; font-size: 13px;
-}
-.log-line { margin-bottom: 4px; border-bottom: 1px solid #1e293b; padding-bottom: 2px; }
 .shadow-soft { box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04); border-radius: 12px; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .flex-center { display: flex; align-items: center; }

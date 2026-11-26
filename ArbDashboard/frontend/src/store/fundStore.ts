@@ -4,7 +4,7 @@
  * - 历史数据、分时数据、篮子权重
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import * as api from '../api'
 
 export interface FundItem {
@@ -40,7 +40,7 @@ export interface FundItem {
 /**
  * TAB 分类映射（与 unified_fund_list.category 字段保持一致）
  * 每个值对应数据库中真实存在的 category，无历史遗留空壳条目。
- * DB 已有的 category: 黄金原油 | QDII欧美 | 混合跨境 | QDII亚洲 | 国内指数 | 指数LOF | 白银 | 债券/货币
+ * DB 已有的 category: 黄金原油 | QDII欧美 | 混合跨境 | QDII亚洲 | 国内LOF | 白银 | 债券/货币
  */
 export const TAB_CATEGORIES: Record<string, string[]> = {
   '黄金原油': ['黄金原油'],
@@ -66,8 +66,13 @@ export const useFundStore = defineStore('fund', () => {
   let dashboardInFlight = false
   let dashboardController: AbortController | null = null
   let dashboardRequestSeq = 0
-  // 始终默认"我的自选"TAB（用户从其他页面回来时永远看到自选）
-  const currentTab = ref('自选')
+  // 始终默认"我的自选"TAB（持久化到 localStorage，从其他页面回来时恢复上次的 TAB）
+  const savedTab = localStorage.getItem('dashboard_tab')
+  const currentTab = ref(savedTab && savedTab !== 'null' ? savedTab : '自选')
+  // [AI-2026-06-28] 自动持久化 TAB 选择
+  watch(currentTab, (v) => {
+    localStorage.setItem('dashboard_tab', v)
+  })
   const searchKeyword = ref('')
   const fundHistory = ref<any[]>([])
   const fundHistoryLoading = ref(false)

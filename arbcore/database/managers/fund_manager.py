@@ -186,13 +186,14 @@ class FundManager(BaseManager):
                 for record in records:
                     self.adapter.execute('''
                         INSERT INTO fund_purchase_status 
-                        (fund_code, purchase_status, redemption_status, purchase_fee, redemption_fee, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, now())
+                        (fund_code, purchase_status, redemption_status, purchase_fee, redemption_fee, purchase_limit, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, now())
                         ON CONFLICT(fund_code) DO UPDATE SET
                         purchase_status = EXCLUDED.purchase_status,
                         redemption_status = EXCLUDED.redemption_status,
                         purchase_fee = EXCLUDED.purchase_fee,
                         redemption_fee = EXCLUDED.redemption_fee,
+                        purchase_limit = EXCLUDED.purchase_limit,
                         updated_at = EXCLUDED.updated_at
                     ''', tuple(record))
                 self.adapter.commit()
@@ -223,19 +224,23 @@ class FundManager(BaseManager):
                 for item in fund_list:
                     self.adapter.execute('''
                         INSERT INTO unified_fund_list
-                        (category, fund_code, fund_name, related_index, pos_ratio, target_type)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        (category, fund_code, fund_name, related_index, idx_code, idx_name, pos_ratio, target_type)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT(fund_code) DO UPDATE SET
                         category = EXCLUDED.category,
                         fund_name = EXCLUDED.fund_name,
                         related_index = EXCLUDED.related_index,
+                        idx_code = EXCLUDED.idx_code,
+                        idx_name = EXCLUDED.idx_name,
                         pos_ratio = EXCLUDED.pos_ratio,
                         target_type = EXCLUDED.target_type
                     ''', (
                         item['category'], 
                         item['code'], 
                         item['name'], 
-                        item.get('related_index', '-'), 
+                        item.get('related_index', '-'),
+                        item.get('idx_code', item.get('related_index', '-')),
+                        item.get('idx_name', '-'),
                         item.get('pos_ratio', 0.95), 
                         item.get('target_type', 'ETF')
                     ))
